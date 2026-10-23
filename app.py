@@ -1923,6 +1923,130 @@ else:
             )
             st.code(report_text, language="text")
 
+      
+          # Download Investigation Report
+        st.divider()
+        st.markdown("### 📥 Download Investigation Report")
+        st.caption("Export your investigation in your preferred format.")
+
+        report_format = st.selectbox(
+            "Report format",
+            ["PDF (.pdf)", "Word (.docx)", "Text (.txt)"],
+            key="investigation_report_format",
+        )
+
+        if report_format == "Text (.txt)":
+            st.download_button(
+                label="⬇️ Download TXT Report",
+                data=report_text,
+                file_name="datadetective_investigation_report.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        elif report_format == "Word (.docx)":
+            from docx import Document
+            from io import BytesIO
+
+            doc = Document()
+            doc.add_heading("Data Detective", 0)
+            doc.add_heading("Automated Data Investigation Report", level=1)
+            doc.add_paragraph(
+                f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
+            )
+
+            for line in report_text.splitlines():
+                cleaned_line = line.strip()
+                if not cleaned_line:
+                    continue
+                elif cleaned_line.startswith("==="):
+                    continue
+                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
+                    doc.add_heading(cleaned_line, level=2)
+                elif cleaned_line.startswith("- "):
+                    doc.add_paragraph(cleaned_line[2:], style="List Bullet")
+                else:
+                    doc.add_paragraph(cleaned_line)
+
+            word_buffer = BytesIO()
+            doc.save(word_buffer)
+            word_buffer.seek(0)
+
+            st.download_button(
+                label="⬇️ Download Word Report",
+                data=word_buffer.getvalue(),
+                file_name="datadetective_investigation_report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+
+        elif report_format == "PDF (.pdf)":
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from xml.sax.saxutils import escape
+            from io import BytesIO
+
+            pdf_buffer = BytesIO()
+            pdf_doc = SimpleDocTemplate(
+                pdf_buffer,
+                pagesize=A4,
+                rightMargin=2 * cm,
+                leftMargin=2 * cm,
+                topMargin=2 * cm,
+                bottomMargin=2 * cm,
+                title="Data Detective Investigation Report",
+                author="Data Detective",
+            )
+
+            styles = getSampleStyleSheet()
+            styles.add(
+                ParagraphStyle(
+                    name="ReportTitleCustom",
+                    parent=styles["Title"],
+                    textColor=colors.HexColor("#4338CA"),
+                    spaceAfter=12,
+                )
+            )
+
+            story = [
+                Paragraph("DATA DETECTIVE", styles["ReportTitleCustom"]),
+                Paragraph("Automated Data Investigation Report", styles["Heading2"]),
+                Paragraph(
+                    f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}",
+                    styles["Normal"],
+                ),
+                Spacer(1, 12),
+            ]
+
+            for line in report_text.splitlines():
+                cleaned_line = line.strip()
+                if not cleaned_line:
+                    story.append(Spacer(1, 5))
+                elif cleaned_line.startswith("==="):
+                    continue
+                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
+                    story.append(Paragraph(escape(cleaned_line), styles["Heading2"]))
+                elif cleaned_line.startswith("- "):
+                    story.append(
+                        Paragraph("&#8226; " + escape(cleaned_line[2:]), styles["BodyText"])
+                    )
+                else:
+                    story.append(Paragraph(escape(cleaned_line), styles["BodyText"]))
+
+            pdf_doc.build(story)
+            pdf_buffer.seek(0)
+
+            st.download_button(
+                label="⬇️ Download PDF Report",
+                data=pdf_buffer.getvalue(),
+                file_name="datadetective_investigation_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
 st.markdown(
     """
     <div class="app-footer">
