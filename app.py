@@ -1762,11 +1762,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-    """
-    <div class="app-footer">
-        DataDetective · Autonomous Data Investigation Platform ·
-        Generated insights should be reviewed by a human analyst.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
