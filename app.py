@@ -1592,193 +1592,336 @@ else:
 
         report_text = build_report(df, info, quality, discoveries)
 
-        st.markdown("### 📄 Investigation Report Preview")
+       # Visual investigation dashboard
+        import plotly.express as px
 
-        with st.container(border=True):
-            st.markdown("#### 🔎 Automated Data Investigation Report")
+        st.markdown(
+            """
+            <div style="padding: 18px 0 8px 0;">
+                <h2 style="margin-bottom: 4px;">Investigation Overview</h2>
+                <p style="color: #94A3B8; margin-top: 0;">
+                    A visual summary of your dataset's health and findings.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Summary metric cards
+        rows = len(df)
+        columns = len(df.columns)
+        missing_cells = int(df.isna().sum().sum())
+
+        # Also count blank strings as missing
+        try:
+            blank_cells = int(
+                df.select_dtypes(include=["object", "string"])
+                .apply(lambda col: col.astype("string").str.strip().eq("").sum())
+                .sum()
+            )
+        except (TypeError, ValueError):
+            blank_cells = 0
+
+        missing_cells = min(missing_cells + blank_cells, rows * columns)
+        total_cells = rows * columns
+        missing_pct = (
+            missing_cells / total_cells * 100 if total_cells else 0
+        )
+        duplicate_rows = int(df.duplicated().sum())
+        health_score = quality.get("score", None)
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Total Rows", f"{rows:,}")
+        c2.metric("Total Columns", f"{columns:,}")
+        c3.metric(
+            "Data Health",
+            f"{health_score}/100" if health_score is not None else "N/A",
+            help="Calculated by DataDetective's existing data-quality assessment.",
+        )
+        c4.metric("Missing Cells", f"{missing_pct:.2f}%")
+
+        st.divider()
+
+        # Data quality charts
+        st.markdown("### Data Quality Analysis")
+
+        left, right = st.columns(2)
+
+        with left:
+            missing_by_column = df.isna().sum()
+
+            try:
+                blank_by_column = (
+                    df.select_dtypes(include=["object", "string"])
+                    .apply(
+                        lambda col: col.astype("string")
+                        .str.strip()
+                        .eq("")
+                        .sum()
+                    )
+                )
+                for column_name, count in blank_by_column.items():
+                    missing_by_column[column_name] += int(count)
+            except (TypeError, ValueError):
+                pass
+
+            missing_chart_data = (
+                missing_by_column[missing_by_column > 0]
+                .sort_values(ascending=False)
+                .head(15)
+                .rename("Missing Values")
+                .reset_index()
+            )
+            missing_chart_data.columns = ["Column", "Missing Values"]
+
+            st.markdown("#### Missing Values by Column")
+
+            if not missing_chart_data.empty:
+                fig_missing = px.bar(
+                    missing_chart_data.sort_values("Missing Values"),
+                    x="Missing Values",
+                    y="Column",
+                    orientation="h",
+                    color="Missing Values",
+                    color_continuous_scale=["#93C5FD", "#4F46E5"],
+                    template="plotly_dark",
+                )
+                fig_missing.update_layout(
+                    height=350,
+                    showlegend=False,
+                    coloraxis_showscale=False,
+                    margin=dict(l=10, r=10, t=15, b=10),
+                )
+                st.plotly_chart(
+                    fig_missing, use_container_width=True
+                )
+            else:
+                st.success("No missing values detected.")
+
+        with right:
+            st.markdown("#### Duplicate Records")
+
+            duplicate_count = int(df.duplicated().sum())
+            unique_count = max(rows - duplicate_count, 0)
+
+            duplicate_chart = px.pie(
+                names=["Unique Rows", "Duplicate Rows"],
+                values=[unique_count, duplicate_count],
+                hole=0.65,
+                color_discrete_sequence=["#6366F1", "#F59E0B"],
+                template="plotly_dark",
+            )
+            duplicate_chart.update_layout(
+                height=350,
+                margin=dict(l=10, r=10, t=15, b=10),
+                legend_title_text="Record Type",
+            )
+            st.plotly_chart(
+                duplicate_chart, use_container_width=True
+            )
+            st.caption(
+                f"{duplicate_count:,} duplicate rows out of {rows:,} total rows."
+            )
+
+        # Numerical data exploration
+        numeric_columns = df.select_dtypes(include="number").columns.tolist()
+
+        st.divider()
+        st.markdown("### Numerical Data Explorer")
+
+        if numeric_columns:
+            selected_column = st.selectbox(
+                "Choose a numerical column",
+                numeric_columns,
+                key="report_numeric_column",
+            )
+
+            numeric_values = df[selected_column].dropna()
+
+            if not numeric_values.empty:
+                fig_hist = px.histogram(
+                    x=numeric_values,
+                    nbins=30,
+                    labels={"x": selected_column, "count": "Frequency"},
+                    title=f"Distribution of {selected_column}",
+                    template="plotly_dark",
+                    color_discrete_sequence=["#818CF8"],
+                )
+                fig_hist.update_layout(
+                    height=380,
+                    margin=dict(l=10, r=10, t=55, b=10),
+                )
+                st.plotly_chart(
+                    fig_hist, use_container_width=True
+                )
+
+                stat1, stat2, stat3, stat4 = st.columns(4)
+                stat1.metric(
+                    "Mean", f"{numeric_values.mean():,.3f}"
+                )
+                stat2.metric(
+                    "Median", f"{numeric_values.median():,.3f}"
+                )
+                stat3.metric(
+                    "Minimum", f"{numeric_values.min():,.3f}"
+                )
+                stat4.metric(
+                    "Maximum", f"{numeric_values.max():,.3f}"
+                )
+            else:
+                st.info("This column has no available numerical values.")
+        else:
+            st.info("No numerical columns are available to plot.")
+
+        # Correlation analysis
+        if len(numeric_columns) >= 2:
+            with st.expander("Explore Feature Correlations"):
+                corr = df[numeric_columns].corr()
+
+                fig_corr = px.imshow(
+                    corr,
+                    text_auto=".2f",
+                    aspect="auto",
+                    color_continuous_scale="RdBu_r",
+                    zmin=-1,
+                    zmax=1,
+                    title="Numerical Feature Correlation Matrix",
+                    template="plotly_dark",
+                )
+                fig_corr.update_layout(
+                    height=max(400, min(700, 35 * len(numeric_columns))),
+                    margin=dict(l=10, r=10, t=55, b=10),
+                )
+                st.plotly_chart(
+                    fig_corr, use_container_width=True
+                )
+
+        # Machine learning results
+        st.divider()
+        st.markdown("### Machine Learning Insights")
+
+        ml = st.session_state.get("ml_results")
+
+        if ml is not None:
+            st.success(
+                f"Best model: {ml.get('best_name', 'Not available')}"
+            )
+
+            results_df = ml.get("results_df")
+
+            if results_df is not None and not results_df.empty:
+                metric_columns = [
+                    col for col in results_df.select_dtypes(include="number").columns
+                ]
+
+                if "Model" in results_df.columns and metric_columns:
+                    selected_metric = st.selectbox(
+                        "Compare model performance",
+                        metric_columns,
+                        key="report_model_metric",
+                    )
+
+                    fig_models = px.bar(
+                        results_df,
+                        x="Model",
+                        y=selected_metric,
+                        color="Model",
+                        title=f"Model Comparison — {selected_metric}",
+                        template="plotly_dark",
+                        color_discrete_sequence=px.colors.qualitative.Bold,
+                    )
+                    fig_models.update_layout(
+                        height=380,
+                        showlegend=False,
+                        xaxis_tickangle=-20,
+                        margin=dict(l=10, r=10, t=55, b=50),
+                    )
+                    st.plotly_chart(
+                        fig_models, use_container_width=True
+                    )
+
+                with st.expander("View Full Model Comparison"):
+                    st.dataframe(
+                        results_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+        else:
+            st.info(
+                "Run the machine-learning analysis to see model "
+                "comparisons and performance charts here."
+            )
+
+        # Findings and recommendations
+        st.divider()
+        st.markdown("### Investigation Findings")
+
+        with st.expander(
+            f"Unexpected Discoveries ({len(discoveries)})",
+            expanded=True,
+        ):
+            if discoveries:
+                for discovery in discoveries:
+                    st.markdown(f"- {str(discovery).replace('**', '')}")
+            else:
+                st.write("No unexpected discoveries were returned.")
+
+        q1, q2 = st.columns(2)
+
+        with q1:
+            with st.container(border=True):
+                st.markdown("#### Privacy & Security")
+                try:
+                    privacy_results = privacy_scan(df)
+                    sensitive = privacy_results[
+                        ~privacy_results["Detection"].str.contains(
+                            "Normal", case=False, na=False
+                        )
+                    ]
+                    st.metric(
+                        "Potentially Sensitive Columns",
+                        len(sensitive),
+                    )
+
+                    if not sensitive.empty:
+                        st.warning(
+                            "Review these columns before sharing the dataset."
+                        )
+                        st.dataframe(
+                            sensitive,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.success("No columns were flagged by the name-based scan.")
+                except Exception:
+                    st.info(
+                        "Privacy scan results are unavailable for display."
+                    )
+
+        with q2:
+            with st.container(border=True):
+                st.markdown("#### Data Quality Status")
+                st.metric("Duplicate Rows", f"{duplicate_rows:,}")
+                st.metric("Missing Cell Percentage", f"{missing_pct:.2f}%")
+
+                if missing_pct > 0 or duplicate_rows > 0:
+                    st.warning(
+                        "Review missing values and duplicate records "
+                        "before modelling."
+                    )
+                else:
+                    st.success(
+                        "No missing cells or duplicate rows were detected."
+                    )
+
+        # Original text report remains available
+        with st.expander("Read Full Investigation Report"):
             st.caption(
                 f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
             )
-
-            for line in report_text.splitlines():
-                cleaned_line = line.strip()
-
-                if not cleaned_line:
-                    continue
-                elif cleaned_line.startswith("==="):
-                    st.divider()
-                elif (
-                    cleaned_line.split(".", 1)[0].isdigit()
-                    and "." in cleaned_line
-                ):
-                    st.markdown(f"### {cleaned_line}")
-                elif cleaned_line.startswith("-"):
-                    st.markdown(cleaned_line)
-                else:
-                    st.write(cleaned_line)
-
-        st.markdown("### 📥 Download Investigation Report")
-        st.caption("Choose your preferred format.")
-
-        report_format = st.selectbox(
-            "Report format",
-            ["PDF (.pdf)", "Word (.docx)", "Text (.txt)"],
-            key="investigation_report_format",
-        )
-
-        if report_format == "Text (.txt)":
-            st.download_button(
-                label="⬇️ Download TXT Report",
-                data=report_text,
-                file_name="datadetective_investigation_report.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-
-        elif report_format == "Word (.docx)":
-            from docx import Document
-            from io import BytesIO
-
-            doc = Document()
-            doc.add_heading("Data Detective", 0)
-            doc.add_heading("Automated Data Investigation Report", level=1)
-            doc.add_paragraph(
-                f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
-            )
-
-            for line in report_text.splitlines():
-                cleaned_line = line.strip()
-                if not cleaned_line:
-                    continue
-                elif cleaned_line.startswith("==="):
-                    doc.add_paragraph(cleaned_line.replace("=", "").strip())
-                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
-                    doc.add_heading(cleaned_line, level=2)
-                elif cleaned_line.startswith("- "):
-                    doc.add_paragraph(cleaned_line[2:], style="List Bullet")
-                else:
-                    doc.add_paragraph(cleaned_line)
-
-            word_buffer = BytesIO()
-            doc.save(word_buffer)
-            word_buffer.seek(0)
-
-            st.download_button(
-                label="⬇️ Download Word Report",
-                data=word_buffer.getvalue(),
-                file_name="datadetective_investigation_report.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-            )
-
-        elif report_format == "PDF (.pdf)":
-            from reportlab.lib import colors
-            from reportlab.lib.enums import TA_CENTER
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import cm
-            from reportlab.platypus import (
-                SimpleDocTemplate,
-                Paragraph,
-                Spacer,
-                HRFlowable,
-            )
-            from xml.sax.saxutils import escape
-            from io import BytesIO
-
-            pdf_buffer = BytesIO()
-            pdf_doc = SimpleDocTemplate(
-                pdf_buffer,
-                pagesize=A4,
-                rightMargin=2 * cm,
-                leftMargin=2 * cm,
-                topMargin=2 * cm,
-                bottomMargin=2 * cm,
-                title="Data Detective Investigation Report",
-                author="Data Detective",
-            )
-
-            styles = getSampleStyleSheet()
-            styles.add(
-                ParagraphStyle(
-                    name="ReportTitle",
-                    parent=styles["Title"],
-                    alignment=TA_CENTER,
-                    textColor=colors.HexColor("#4338CA"),
-                    spaceAfter=12,
-                )
-            )
-            styles.add(
-                ParagraphStyle(
-                    name="SectionHeading",
-                    parent=styles["Heading2"],
-                    textColor=colors.HexColor("#4338CA"),
-                    spaceBefore=12,
-                    spaceAfter=6,
-                )
-            )
-
-            story = [
-                Paragraph("DATA DETECTIVE", styles["ReportTitle"]),
-                Paragraph(
-                    "Automated Data Investigation Report",
-                    styles["Heading2"],
-                ),
-                Paragraph(
-                    f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}",
-                    styles["Normal"],
-                ),
-                Spacer(1, 12),
-                HRFlowable(
-                    width="100%",
-                    color=colors.HexColor("#C7D2FE"),
-                ),
-                Spacer(1, 12),
-            ]
-
-            for line in report_text.splitlines():
-                cleaned_line = line.strip()
-
-                if not cleaned_line:
-                    story.append(Spacer(1, 5))
-                elif cleaned_line.startswith("==="):
-                    story.append(
-                        HRFlowable(
-                            width="100%",
-                            color=colors.HexColor("#C7D2FE"),
-                        )
-                    )
-                    story.append(Spacer(1, 6))
-                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
-                    story.append(
-                        Paragraph(
-                            escape(cleaned_line),
-                            styles["SectionHeading"],
-                        )
-                    )
-                elif cleaned_line.startswith("- "):
-                    story.append(
-                        Paragraph(
-                            "&#8226; " + escape(cleaned_line[2:]),
-                            styles["BodyText"],
-                        )
-                    )
-                else:
-                    story.append(
-                        Paragraph(escape(cleaned_line), styles["BodyText"])
-                    )
-
-            pdf_doc.build(story)
-            pdf_buffer.seek(0)
-
-            st.download_button(
-                label="⬇️ Download PDF Report",
-                data=pdf_buffer.getvalue(),
-                file_name="datadetective_investigation_report.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
-
+            st.code(report_text, language="text")
 
 st.markdown(
     """
