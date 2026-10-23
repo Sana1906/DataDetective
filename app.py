@@ -1547,15 +1547,14 @@ else:
     with tabs[8]:
         ext.render_dl(df, info, prep_features)
 
-    with tabs[9]:
-
+   with tabs[9]:
         st.markdown(
             '<div class="section-title">Investigation Report</div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
         st.markdown(
             '<div class="section-caption">A consolidated summary of dataset quality, discoveries and machine-learning results.</div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
         quality = st.session_state.get("quality") or data_quality_report(df)
@@ -1564,173 +1563,205 @@ else:
             or discover_patterns(df, info)
         )
 
-        report_text = build_report(
-            df,
-            info,
-            quality,
-            discoveries
-        )
+        report_text = build_report(df, info, quality, discoveries)
 
         st.markdown("### 📄 Investigation Report Preview")
 
-with st.container(border=True):
-    st.markdown("#### 🔎 Automated Data Investigation Report")
-    st.caption(
-        f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
-    )
+        with st.container(border=True):
+            st.markdown("#### 🔎 Automated Data Investigation Report")
+            st.caption(
+                f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
+            )
 
-    report_sections = report_text.split("\n")
-    for line in report_sections:
-        cleaned_line = line.strip()
+            for line in report_text.splitlines():
+                cleaned_line = line.strip()
 
-        if not cleaned_line:
-            continue
-        elif cleaned_line.startswith("===="):
-            st.divider()
-        elif cleaned_line.split(".", 1)[0].isdigit() and "." in cleaned_line:
-    st.markdown(f"### {cleaned_line}")
-        elif cleaned_line.startswith("-"):
-            st.markdown(cleaned_line)
-        else:
-            st.write(cleaned_line)
-        
+                if not cleaned_line:
+                    continue
+                elif cleaned_line.startswith("==="):
+                    st.divider()
+                elif (
+                    cleaned_line.split(".", 1)[0].isdigit()
+                    and "." in cleaned_line
+                ):
+                    st.markdown(f"### {cleaned_line}")
+                elif cleaned_line.startswith("-"):
+                    st.markdown(cleaned_line)
+                else:
+                    st.write(cleaned_line)
 
-        # ---- Download Investigation Report ----
-st.markdown("### 📥 Download Investigation Report")
-st.caption("Choose your preferred format.")
+        st.markdown("### 📥 Download Investigation Report")
+        st.caption("Choose your preferred format.")
 
-report_format = st.selectbox(
-    "Report format",
-    ["PDF (.pdf)", "Word (.docx)", "Text (.txt)"],
-    key="investigation_report_format"
+        report_format = st.selectbox(
+            "Report format",
+            ["PDF (.pdf)", "Word (.docx)", "Text (.txt)"],
+            key="investigation_report_format",
+        )
 
-if report_format == "Text (.txt)":
-    st.download_button(
-        label="⬇️ Download TXT Report",
-        data=report_text,
-        file_name="datadetective_investigation_report.txt",
-        mime="text/plain",
-        use_container_width=True,
-    )
+        if report_format == "Text (.txt)":
+            st.download_button(
+                label="⬇️ Download TXT Report",
+                data=report_text,
+                file_name="datadetective_investigation_report.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
-elif report_format == "Word (.docx)":
-    from docx import Document
-    from io import BytesIO
+        elif report_format == "Word (.docx)":
+            from docx import Document
+            from io import BytesIO
 
-    doc = Document()
-    doc.add_heading("Data Detective", 0)
-    doc.add_heading("Automated Data Investigation Report", level=1)
-    doc.add_paragraph(
-        f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
-    )
+            doc = Document()
+            doc.add_heading("Data Detective", 0)
+            doc.add_heading("Automated Data Investigation Report", level=1)
+            doc.add_paragraph(
+                f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
+            )
 
-    for line in report_text.splitlines():
-        cleaned_line = line.strip()
-        if not cleaned_line:
-            continue
-        elif cleaned_line.startswith("==="):
-            doc.add_paragraph(cleaned_line.replace("=", "").strip())
-        elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
-            doc.add_heading(cleaned_line, level=2)
-        elif cleaned_line.startswith("- "):
-            doc.add_paragraph(cleaned_line[2:], style="List Bullet")
-        else:
-            doc.add_paragraph(cleaned_line)
+            for line in report_text.splitlines():
+                cleaned_line = line.strip()
+                if not cleaned_line:
+                    continue
+                elif cleaned_line.startswith("==="):
+                    doc.add_paragraph(cleaned_line.replace("=", "").strip())
+                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
+                    doc.add_heading(cleaned_line, level=2)
+                elif cleaned_line.startswith("- "):
+                    doc.add_paragraph(cleaned_line[2:], style="List Bullet")
+                else:
+                    doc.add_paragraph(cleaned_line)
 
-    word_buffer = BytesIO()
-    doc.save(word_buffer)
-    word_buffer.seek(0)
+            word_buffer = BytesIO()
+            doc.save(word_buffer)
+            word_buffer.seek(0)
 
-    st.download_button(
-        label="⬇️ Download Word Report",
-        data=word_buffer.getvalue(),
-        file_name="datadetective_investigation_report.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-    )
+            st.download_button(
+                label="⬇️ Download Word Report",
+                data=word_buffer.getvalue(),
+                file_name="datadetective_investigation_report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
 
-elif report_format == "PDF (.pdf)":
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, HRFlowable
-    )
-    from xml.sax.saxutils import escape
-    from io import BytesIO
+        elif report_format == "PDF (.pdf)":
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import (
+                SimpleDocTemplate,
+                Paragraph,
+                Spacer,
+                HRFlowable,
+            )
+            from xml.sax.saxutils import escape
+            from io import BytesIO
 
-    pdf_buffer = BytesIO()
-    pdf_doc = SimpleDocTemplate(
-        pdf_buffer,
-        pagesize=A4,
-        rightMargin=2 * cm,
-        leftMargin=2 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
-        title="Data Detective Investigation Report",
-        author="Data Detective",
-    )
+            pdf_buffer = BytesIO()
+            pdf_doc = SimpleDocTemplate(
+                pdf_buffer,
+                pagesize=A4,
+                rightMargin=2 * cm,
+                leftMargin=2 * cm,
+                topMargin=2 * cm,
+                bottomMargin=2 * cm,
+                title="Data Detective Investigation Report",
+                author="Data Detective",
+            )
 
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="ReportTitle",
-        parent=styles["Title"],
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#4338CA"),
-        spaceAfter=12,
-    ))
-    styles.add(ParagraphStyle(
-        name="SectionHeading",
-        parent=styles["Heading2"],
-        textColor=colors.HexColor("#4338CA"),
-        spaceBefore=12,
-        spaceAfter=6,
-    ))
+            styles = getSampleStyleSheet()
+            styles.add(
+                ParagraphStyle(
+                    name="ReportTitle",
+                    parent=styles["Title"],
+                    alignment=TA_CENTER,
+                    textColor=colors.HexColor("#4338CA"),
+                    spaceAfter=12,
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="SectionHeading",
+                    parent=styles["Heading2"],
+                    textColor=colors.HexColor("#4338CA"),
+                    spaceBefore=12,
+                    spaceAfter=6,
+                )
+            )
 
-    story = [
-        Paragraph("DATA DETECTIVE", styles["ReportTitle"]),
-        Paragraph("Automated Data Investigation Report", styles["Heading2"]),
-        Paragraph(
-            f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}",
-            styles["Normal"],
-        ),
-        Spacer(1, 12),
-        HRFlowable(width="100%", color=colors.HexColor("#C7D2FE")),
-        Spacer(1, 12),
-    ]
+            story = [
+                Paragraph("DATA DETECTIVE", styles["ReportTitle"]),
+                Paragraph(
+                    "Automated Data Investigation Report",
+                    styles["Heading2"],
+                ),
+                Paragraph(
+                    f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}",
+                    styles["Normal"],
+                ),
+                Spacer(1, 12),
+                HRFlowable(
+                    width="100%",
+                    color=colors.HexColor("#C7D2FE"),
+                ),
+                Spacer(1, 12),
+            ]
 
-    for line in report_text.splitlines():
-        cleaned_line = line.strip()
-        if not cleaned_line:
-            story.append(Spacer(1, 5))
-        elif cleaned_line.startswith("==="):
-            story.append(HRFlowable(
-                width="100%", color=colors.HexColor("#C7D2FE")
-            ))
-            story.append(Spacer(1, 6))
-        elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
-            story.append(Paragraph(escape(cleaned_line), styles["SectionHeading"]))
-        elif cleaned_line.startswith("- "):
-            story.append(Paragraph(
-                "&#8226; " + escape(cleaned_line[2:]),
-                styles["BodyText"],
-            ))
-        else:
-            story.append(Paragraph(escape(cleaned_line), styles["BodyText"]))
+            for line in report_text.splitlines():
+                cleaned_line = line.strip()
 
-    pdf_doc.build(story)
-    pdf_buffer.seek(0)
+                if not cleaned_line:
+                    story.append(Spacer(1, 5))
+                elif cleaned_line.startswith("==="):
+                    story.append(
+                        HRFlowable(
+                            width="100%",
+                            color=colors.HexColor("#C7D2FE"),
+                        )
+                    )
+                    story.append(Spacer(1, 6))
+                elif cleaned_line[:1].isdigit() and ". " in cleaned_line:
+                    story.append(
+                        Paragraph(
+                            escape(cleaned_line),
+                            styles["SectionHeading"],
+                        )
+                    )
+                elif cleaned_line.startswith("- "):
+                    story.append(
+                        Paragraph(
+                            "&#8226; " + escape(cleaned_line[2:]),
+                            styles["BodyText"],
+                        )
+                    )
+                else:
+                    story.append(
+                        Paragraph(escape(cleaned_line), styles["BodyText"])
+                    )
 
-    st.download_button(
-        label="⬇️ Download PDF Report",
-        data=pdf_buffer.getvalue(),
-        file_name="datadetective_investigation_report.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-    )
+            pdf_doc.build(story)
+            pdf_buffer.seek(0)
+
+            st.download_button(
+                label="⬇️ Download PDF Report",
+                data=pdf_buffer.getvalue(),
+                file_name="datadetective_investigation_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+
 st.markdown(
+    """
+    <div class="app-footer">
+        DataDetective · Autonomous Data Investigation Platform ·
+        Generated insights should be reviewed by a human analyst.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
     """
     <div class="app-footer">
         DataDetective · Autonomous Data Investigation Platform ·
