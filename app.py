@@ -1547,7 +1547,7 @@ else:
     with tabs[8]:
         ext.render_dl(df, info, prep_features)
 
-   with tabs[9]:
+    with tabs[9]:
         st.markdown(
             '<div class="section-title">Investigation Report</div>',
             unsafe_allow_html=True,
