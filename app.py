@@ -977,8 +977,8 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
 
     # Anomaly detection summary
     lines.append("\n6. ANOMALY DETECTION")
- anomaly_result, anomaly_message = detect_anomalies(df, info)
-lines.append(str(anomaly_message))
+    anomaly_result, anomaly_message = detect_anomalies(df, info)
+    lines.append(str(anomaly_message))
 
 if anomaly_result is not None and "_anomaly" in anomaly_result.columns:
     anomaly_count = int(anomaly_result["_anomaly"].sum())
