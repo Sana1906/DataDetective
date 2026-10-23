@@ -951,7 +951,35 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
             for w in ml["leakage_warnings"]:
                 lines.append(f"  - {w.replace('**', '')}")
 
-    lines.append("\n5. RECOMMENDATIONS")
+  # Privacy scan summary
+    lines.append("\n5. PRIVACY & SECURITY")
+    privacy_results = privacy_scan(df)
+    sensitive = privacy_results[
+    ~privacy_results["Detection"].str.contains("Normal", case=False, na=False)
+]
+    
+    ]
+    lines.append(f"Columns scanned: {len(privacy_results)}")
+    lines.append(f"Columns flagged as potentially sensitive: {len(sensitive)}")
+    if not sensitive.empty:
+        lines.append("Review these columns before sharing the dataset:")
+        for column in sensitive["Column"].tolist():
+            lines.append(f"  - {column}")
+    else:
+        lines.append("No columns were flagged by the name-based privacy scan.")
+
+    # Anomaly detection summary
+    lines.append("\n6. ANOMALY DETECTION")
+ anomaly_result, anomaly_message = detect_anomalies(df, info)
+lines.append(str(anomaly_message))
+
+if anomaly_result is not None and "_anomaly" in anomaly_result.columns:
+    anomaly_count = int(anomaly_result["_anomaly"].sum())
+    lines.append(f"Records flagged as unusual: {anomaly_count}")
+else:
+    lines.append("Anomaly count unavailable for this dataset.")
+
+    lines.append("\n7. RECOMMENDATIONS")
     if quality["score"] < 65:
         lines.append("  - Clean the dataset (handle missing values, duplicates, outliers) before modeling.")
     if quality["imbalanced_cols"]:
