@@ -78,49 +78,48 @@ def spark_benchmark(df: pd.DataFrame, mult: int = 1):
     except Exception as ex:
         return len(big), t_pd, None, "Spark could not start: " + str(ex).splitlines()[0][:110]
 
-
 # ---------------------------------------------------------------- Apache Spark
 def render_spark(df):
+    import time
+
     st.markdown("## ⚡ Distributed Processing Lab")
     st.caption(
         "Explore data transformations, benchmark pandas against Spark, "
         "inspect partition concepts, and generate PySpark and Scala code."
     )
 
-    import time
-
-    # Dataset overview
     numeric_cols = list(df.select_dtypes(include="number").columns)
     all_cols = list(df.columns)
 
+    # 1. Dataset overview
     a, b, c, d = st.columns(4)
     a.metric("Dataset rows", f"{len(df):,}")
     b.metric("Columns", len(df.columns))
     c.metric("Numeric columns", len(numeric_cols))
-    d.metric("Suggested engine", "Spark" if len(df) >= 1_000_000 else "pandas")
-
-    st.caption(
-        "Engine recommendation is based on row count only. "
-        "It does not mean this app automatically switches engines."
+    d.metric(
+        "Suggested engine",
+        "Spark" if len(df) >= 1_000_000 else "pandas",
     )
 
-    st.divider()
-
-    # ---------------------------------------------------------------
-    # 1. Visual Data Pipeline
-    # ---------------------------------------------------------------
-    st.markdown("### 🔗 Visual Data Pipeline")
-    st.write("Configure a simple transformation and preview its result.")
+    st.caption(
+        "This is a size-based recommendation, not an automatic engine switch."
+    )
 
     if not all_cols:
         st.warning("The dataset has no columns.")
         return
 
+    st.divider()
+
+    # 2. Visual Data Pipeline
+    st.markdown("### 🔗 Visual Data Pipeline")
+    st.write("Configure a transformation and preview the result.")
+
     p1, p2 = st.columns(2)
 
     with p1:
         group_col = st.selectbox(
-            "Group by",
+            "Group by column",
             all_cols,
             key="spark_pipeline_group",
         )
@@ -133,15 +132,16 @@ def render_spark(df):
         )
 
     value_col = None
+
     if operation != "Count rows":
-        if not numeric_cols:
-            st.warning("This aggregation requires a numeric column.")
-        else:
+        if numeric_cols:
             value_col = st.selectbox(
                 "Numeric column",
                 numeric_cols,
                 key="spark_pipeline_value",
             )
+        else:
+            st.warning("This aggregation requires a numeric column.")
 
     filter_col = st.selectbox(
         "Optional filter column",
@@ -154,9 +154,10 @@ def render_spark(df):
 
     if filter_col != "No filter":
         values = filtered_df[filter_col].dropna().unique().tolist()
+
         if values:
             filter_value = st.selectbox(
-                "Keep rows where this value matches",
+                "Keep rows matching",
                 values,
                 key="spark_pipeline_filter_value",
             )
@@ -182,11 +183,7 @@ def render_spark(df):
                     .size()
                     .reset_index(name="record_count")
                 )
-            else:
-                if value_col is None:
-                    st.error("Select a numeric column first.")
-                    return
-
+            elif value_col is not None:
                 funcs = {
                     "Average": "mean",
                     "Sum": "sum",
@@ -198,23 +195,39 @@ def render_spark(df):
                     .agg(funcs[operation])
                     .reset_index()
                 )
+            else:
+                st.error("Select a numeric column first.")
+                return
 
             st.session_state["spark_pipeline_result"] = output
             st.session_state["spark_pipeline_signature"] = (
-                group_col, operation, value_col, filter_col, filter_value
+                group_col,
+                operation,
+                value_col,
+                filter_col,
+                filter_value,
             )
+
         except Exception as exc:
             st.error(f"Pipeline failed: {exc}")
 
     pipeline_result = st.session_state.get("spark_pipeline_result")
     pipeline_signature = st.session_state.get("spark_pipeline_signature")
     current_signature = (
-        group_col, operation, value_col, filter_col, filter_value
+        group_col,
+        operation,
+        value_col,
+        filter_col,
+        filter_value,
     )
 
-    if pipeline_result is not None and pipeline_signature == current_signature:
+    if (
+        pipeline_result is not None
+        and pipeline_signature == current_signature
+    ):
         st.markdown("#### Pipeline output")
         st.dataframe(pipeline_result, use_container_width=True)
+
         st.download_button(
             "📥 Download pipeline result (CSV)",
             data=pipeline_result.to_csv(index=False).encode("utf-8"),
@@ -225,10 +238,9 @@ def render_spark(df):
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # 2. Benchmark and benchmark history
-    # ---------------------------------------------------------------
+    # 3. pandas versus Spark benchmark
     st.markdown("### ⏱️ pandas vs Spark Benchmark")
+
     multiplier = st.select_slider(
         "Test size (copies of your dataset)",
         options=[1, 20, 100],
@@ -242,51 +254,68 @@ def render_spark(df):
         use_container_width=True,
         key="spark_benchmark_run",
     ):
-        with st.spinner("Running benchmark..."):
-            rows, pandas_time, spark_time, error = spark_benchmark(
-                df, multiplier
-            )
+        try:
+            with st.spinner("Running benchmark..."):
+                rows, pandas_time, spark_time, error = spark_benchmark(
+                    df, multiplier
+                )
 
-        st.session_state["spark_last_benchmark"] = {
-            "rows": rows,
-            "pandas_time": pandas_time,
-            "spark_time": spark_time,
-            "error": error,
-            "multiplier": multiplier,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
+            result = {
+                "rows": rows,
+                "pandas_time": pandas_time,
+                "spark_time": spark_time,
+                "error": error,
+                "multiplier": multiplier,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
 
-        if pandas_time is not None and spark_time is not None:
-            history = st.session_state.get("spark_benchmark_history", [])
-            history.append(st.session_state["spark_last_benchmark"])
-            st.session_state["spark_benchmark_history"] = history[-20:]
+            st.session_state["spark_last_benchmark"] = result
+
+            if pandas_time is not None and spark_time is not None:
+                history = st.session_state.get(
+                    "spark_benchmark_history", []
+                )
+                history.append(result.copy())
+                st.session_state["spark_benchmark_history"] = history[-20:]
+
+        except Exception as exc:
+            st.error(f"Benchmark failed: {exc}")
 
     result = st.session_state.get("spark_last_benchmark")
 
     if result:
         st.metric("Rows tested", f"{result['rows']:,}")
 
-        if result["pandas_time"] is not None:
-            st.metric("pandas time", f"{result['pandas_time']:.4f} s")
+        pandas_time = result["pandas_time"]
+        spark_time = result["spark_time"]
 
-        if result["spark_time"] is None:
+        if pandas_time is not None:
+            st.metric("pandas execution time", f"{pandas_time:.4f} s")
+
+        if spark_time is None:
             st.warning(
                 "Spark benchmark did not complete: "
                 + str(result["error"] or "Unknown error")
             )
-        elif result["pandas_time"] is not None:
-            pandas_time = result["pandas_time"]
-            spark_time = result["spark_time"]
 
+        elif pandas_time is not None:
             x, y, z = st.columns(3)
             x.metric("pandas", f"{pandas_time:.4f} s")
             y.metric("Spark", f"{spark_time:.4f} s")
 
             if pandas_time > 0 and spark_time > 0:
                 if pandas_time > spark_time:
-                    z.metric("Spark speedup", f"{pandas_time / spark_time:.2f}×")
+                    z.metric(
+                        "Spark speedup",
+                        f"{pandas_time / spark_time:.2f}×",
+                    )
+                elif spark_time > pandas_time:
+                    z.metric(
+                        "pandas speedup",
+                        f"{spark_time / pandas_time:.2f}×",
+                    )
                 else:
-                    z.metric("pandas speedup", f"{spark_time / pandas_time:.2f}×")
+                    z.metric("Speedup", "1.00×")
             else:
                 z.metric("Speedup", "N/A")
 
@@ -303,15 +332,21 @@ def render_spark(df):
                 text_auto=".4f",
                 title="Measured execution time — lower is faster",
             )
+            fig.update_layout(
+                height=360,
+                showlegend=False,
+            )
             st.plotly_chart(fig, use_container_width=True)
 
     history = st.session_state.get("spark_benchmark_history", [])
+
     if history:
         with st.expander("📚 Benchmark history"):
             history_df = pd.DataFrame(history)
             st.dataframe(history_df, use_container_width=True)
+
             st.download_button(
-                "Download benchmark history",
+                "📥 Download benchmark history",
                 data=history_df.to_csv(index=False).encode("utf-8"),
                 file_name="datadetective_benchmark_history.csv",
                 mime="text/csv",
@@ -320,13 +355,11 @@ def render_spark(df):
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # 3. Partition Explorer (conceptual estimate)
-    # ---------------------------------------------------------------
+    # 4. Partition Explorer (illustrative, not live Spark metadata)
     st.markdown("### 🧩 Partition Explorer")
     st.caption(
-        "This section illustrates how Spark could divide data. "
-        "It does not inspect a live Spark cluster."
+        "Illustrative partition estimates only. These are not actual "
+        "partitions from a running Spark cluster."
     )
 
     partitions = st.slider(
@@ -338,13 +371,13 @@ def render_spark(df):
     )
 
     base_rows = len(df)
-    rows_per_partition = (
-        base_rows // partitions if partitions else base_rows
-    )
+    rows_per_partition = base_rows // partitions
     remainder = base_rows % partitions
 
     partition_df = pd.DataFrame({
-        "Partition": [f"Partition {i + 1}" for i in range(partitions)],
+        "Partition": [
+            f"Partition {i + 1}" for i in range(partitions)
+        ],
         "Estimated rows": [
             rows_per_partition + (1 if i < remainder else 0)
             for i in range(partitions)
@@ -357,34 +390,35 @@ def render_spark(df):
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # 4. PySpark and Scala code generator
-    # ---------------------------------------------------------------
+    # 5. PySpark and Scala code generator
     st.markdown("### 💻 Python and Scala Code Generator")
 
     if not numeric_cols:
         st.info(
-            "No numeric columns were found. The code generator needs a "
-            "numeric column for average, sum, minimum, or maximum."
+            "No numeric columns were found. The code generator needs "
+            "a numeric column for numeric aggregations."
         )
         return
 
     code_group = st.selectbox(
-        "Code example: group by",
+        "Group by column",
         all_cols,
         key="spark_code_group",
     )
+
     code_value = st.selectbox(
-        "Code example: numeric column",
+        "Numeric column",
         numeric_cols,
         key="spark_code_value",
     )
+
     code_operation = st.selectbox(
-        "Code example: aggregation",
+        "Aggregation",
         ["Average", "Sum", "Minimum", "Maximum", "Count"],
         key="spark_code_operation",
     )
 
+    # JSON string literals safely escape column names.
     group_literal = json.dumps(str(code_group))
     value_literal = json.dumps(str(code_value))
 
@@ -394,6 +428,7 @@ def render_spark(df):
         "Minimum": "min",
         "Maximum": "max",
     }
+
     scala_functions = {
         "Average": "avg",
         "Sum": "sum",
@@ -403,15 +438,19 @@ def render_spark(df):
 
     if code_operation == "Count":
         py_agg = "F.count(F.lit(1)).alias('record_count')"
-        scala_agg = "count(lit(1)).alias(\"record_count\")"
+        scala_agg = 'count(lit(1)).alias("record_count")'
     else:
         py_func = py_functions[code_operation]
         scala_func = scala_functions[code_operation]
+
         py_agg = (
-            f"F.{py_func}(F.col({value_literal})).alias('{code_operation.lower()}')"
+            f"F.{py_func}(F.col({value_literal}))"
+            f".alias({json.dumps(code_operation.lower())})"
         )
+
         scala_agg = (
-            f"{scala_func}(col({value_literal})).alias(\"{code_operation.lower()}\")"
+            f"{scala_func}(col({value_literal}))"
+            f".alias({json.dumps(code_operation.lower())})"
         )
 
     python_code = f'''from pyspark.sql import SparkSession, functions as F
@@ -426,7 +465,8 @@ result = df.groupBy(F.col({group_literal})).agg({py_agg})
 result.show()
 '''
 
-    scala_code = f'''import org.apache.spark.sql.functions._
+    scala_code = f'''import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
 
 val spark = SparkSession.builder()
   .appName("DataDetective")
@@ -447,6 +487,7 @@ result.show()
 
     with py_tab:
         st.code(python_code, language="python")
+
         st.download_button(
             "📥 Download Python script",
             data=python_code,
@@ -457,6 +498,7 @@ result.show()
 
     with scala_tab:
         st.code(scala_code, language="scala")
+
         st.download_button(
             "📥 Download Scala script",
             data=scala_code,
@@ -477,8 +519,9 @@ result.show()
         )
 
     st.caption(
-        "Benchmark results are measured; partition counts above are illustrative. "
+        "Benchmark results are measured; partition counts are illustrative. "
         "Generated scripts must be run in a compatible Spark environment."
+    )
     )
     )
 # ---------------------------------------------------------------- Cloud
