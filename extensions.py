@@ -136,48 +136,297 @@ def render_cloud(df):
 
 # ---------------------------------------------------------------- Deep Learning
 def render_dl(df, info, prep_features):
-    st.subheader("Deep Learning (Neural Network)")
-    st.write("A multi-layer neural network is trained on the selected target. "
-             "The loss curve shows how well it is learning.")
-    target = st.selectbox("Target column", info["target_candidates"], key="dl_target")
-    feats = [c for c in df.columns if c != target][:12]
-    c1, c2 = st.columns(2)
-    layers = c1.selectbox("Hidden layers", ["(64,)", "(64, 32)", "(128, 64, 32)"], index=1)
-    epochs = c2.slider("Training epochs", 50, 500, 200, step=50)
-    if st.button("Train neural network"):
-        X, y, is_clf, _ = prep_features(df, target, feats)
-        if len(X) < 50:
-            st.error("Need at least 50 valid rows.")
+    st.markdown("## 🧠 Deep Learning Lab")
+    st.caption(
+        "Train a neural network, compare it with Random Forest, "
+        "and explore how the model learns from your dataset."
+    )
+
+    target_candidates = info.get("target_candidates", [])
+    if not target_candidates:
+        st.warning("No suitable target columns were detected in this dataset.")
+        return
+
+    # Dataset overview
+    numeric_count = len(df.select_dtypes(include="number").columns)
+    overview = st.columns(4)
+
+    overview[0].metric("Dataset rows", f"{len(df):,}")
+    overview[1].metric("Total columns", f"{len(df.columns):,}")
+    overview[2].metric("Numeric columns", f"{numeric_count:,}")
+    overview[3].metric("Available targets", f"{len(target_candidates):,}")
+
+    st.divider()
+
+    # Model configuration
+    st.markdown("### ⚙️ Model configuration")
+    left, right = st.columns([1, 1])
+
+    with left:
+        target = st.selectbox(
+            "🎯 Target column",
+            target_candidates,
+            key="dl_target",
+        )
+
+        layers = st.selectbox(
+            "🧩 Neural network architecture",
+            ["(64,)", "(64, 32)", "(128, 64, 32)"],
+            index=1,
+            key="dl_layers",
+        )
+
+    with right:
+        epochs = st.slider(
+            "🔁 Training epochs",
+            min_value=50,
+            max_value=500,
+            value=200,
+            step=50,
+            key="dl_epochs",
+        )
+
+        feats = [c for c in df.columns if c != target][:12]
+        st.info(
+            f"**Target:** `{target}`\n\n"
+            f"**Input features:** {len(feats)}\n\n"
+            f"**Hidden layers:** {layers}\n\n"
+            f"**Maximum iterations:** {epochs}"
+        )
+
+    st.caption(
+        "The target is what the model predicts. Input features are the "
+        "columns used to make that prediction."
+    )
+
+    train_clicked = st.button(
+        "🚀 Train and compare models",
+        type="primary",
+        use_container_width=True,
+        key="dl_train_button",
+    )
+
+    if train_clicked:
+        if not feats:
+            st.error("The dataset needs at least one input feature.")
             return
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=42)
-        sc = StandardScaler().fit(Xtr)
-        cls = MLPClassifier if is_clf else MLPRegressor
-        sizes = {"(64,)": (64,), "(64, 32)": (64, 32), "(128, 64, 32)": (128, 64, 32)}[layers]
-        net = cls(hidden_layer_sizes=sizes, max_iter=epochs, random_state=42)
-        with st.spinner("Training..."):
-            net.fit(sc.transform(Xtr), ytr)
-        pred = net.predict(sc.transform(Xte))
-        score = accuracy_score(yte, pred) if is_clf else r2_score(yte, pred)
-        rf = (RandomForestClassifier if is_clf else RandomForestRegressor)(
-            n_estimators=150, random_state=42).fit(Xtr, ytr)
-        rf_pred = rf.predict(Xte)
-        rf_score = accuracy_score(yte, rf_pred) if is_clf else r2_score(yte, rf_pred)
-        label = "Accuracy" if is_clf else "R2 score"
-        m1, m2 = st.columns(2)
-        m1.metric(f"Neural network ({label})", f"{score:.3f}")
-        m2.metric(f"Random Forest ({label})", f"{rf_score:.3f}", f"{rf_score - score:+.3f} vs NN")
-        if score > rf_score + 0.01:
-            st.success("The neural network clearly wins here, so its extra complexity is justified.")
-        elif score >= rf_score - 0.01:
-            st.info("Both perform about the same. Prefer the simpler model (Random Forest).")
+
+        try:
+            X, y, is_clf, _ = prep_features(df, target, feats)
+
+            if len(X) < 50:
+                st.error("At least 50 valid rows are required for training.")
+                return
+
+            if len(set(y)) < 2 and is_clf:
+                st.error("The classification target needs at least two classes.")
+                return
+
+            Xtr, Xte, ytr, yte = train_test_split(
+                X, y, test_size=0.25, random_state=42
+            )
+
+            sc = StandardScaler().fit(Xtr)
+            Xtr_scaled = sc.transform(Xtr)
+            Xte_scaled = sc.transform(Xte)
+
+            cls = MLPClassifier if is_clf else MLPRegressor
+            sizes = {
+                "(64,)": (64,),
+                "(64, 32)": (64, 32),
+                "(128, 64, 32)": (128, 64, 32),
+            }[layers]
+
+            net = cls(
+                hidden_layer_sizes=sizes,
+                max_iter=epochs,
+                random_state=42,
+            )
+
+            rf_cls = RandomForestClassifier if is_clf else RandomForestRegressor
+            rf = rf_cls(n_estimators=150, random_state=42)
+
+            with st.spinner("Training neural network and Random Forest..."):
+                net.fit(Xtr_scaled, ytr)
+                pred = net.predict(Xte_scaled)
+                rf.fit(Xtr, ytr)
+                rf_pred = rf.predict(Xte)
+
+            score = (
+                accuracy_score(yte, pred)
+                if is_clf else r2_score(yte, pred)
+            )
+            rf_score = (
+                accuracy_score(yte, rf_pred)
+                if is_clf else r2_score(yte, rf_pred)
+            )
+
+            st.session_state["dl_results"] = {
+                "target": target,
+                "is_clf": is_clf,
+                "score": score,
+                "rf_score": rf_score,
+                "loss_curve": list(getattr(net, "loss_curve_", [])),
+                "y_test": list(yte),
+                "pred": list(pred),
+                "rf_pred": list(rf_pred),
+                "features": feats,
+                "layers": layers,
+                "epochs": epochs,
+                "rows": len(X),
+            }
+
+        except Exception as e:
+            st.error(f"Training failed: {e}")
+            return
+
+    results = st.session_state.get("dl_results")
+
+    if not results:
+        st.markdown("### 📊 Your results will appear here")
+        st.info(
+            "Configure your model above and select **Train and compare models** "
+            "to generate performance metrics and learning visualizations."
+        )
+        return
+
+    if results["target"] != target:
+        st.info("Your target selection changed. Train again to update the results.")
+        return
+
+    is_clf = results["is_clf"]
+    score = results["score"]
+    rf_score = results["rf_score"]
+    label = "Accuracy" if is_clf else "R² score"
+
+    st.divider()
+    st.markdown("### 📈 Model performance")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Neural Network", f"{score:.3f}")
+    m2.metric("Random Forest", f"{rf_score:.3f}")
+    m3.metric(
+        "Difference",
+        f"{score - rf_score:+.3f}",
+        help="Positive means the neural network scored higher.",
+    )
+
+    if score > rf_score + 0.01:
+        st.success("The neural network scored higher on this test split.")
+    elif rf_score > score + 0.01:
+        st.info("Random Forest scored higher on this test split.")
+    else:
+        st.info("The two models performed similarly on this test split.")
+
+    st.caption(
+        f"Metric: {label}. Results use a held-out test split and may vary "
+        "with different datasets or random splits."
+    )
+
+    chart_col, loss_col = st.columns(2)
+
+    with chart_col:
+        comparison = pd.DataFrame({
+            "Model": ["Neural Network", "Random Forest"],
+            label: [score, rf_score],
+        })
+
+        fig_compare = px.bar(
+            comparison,
+            x="Model",
+            y=label,
+            color="Model",
+            title="Model score comparison",
+            text_auto=".3f",
+        )
+        fig_compare.update_layout(
+            height=360,
+            showlegend=False,
+            margin=dict(t=60, b=20, l=20, r=20),
+        )
+        st.plotly_chart(fig_compare, use_container_width=True)
+
+    with loss_col:
+        losses = results["loss_curve"]
+
+        if losses:
+            loss_df = pd.DataFrame({
+                "Epoch": range(1, len(losses) + 1),
+                "Training loss": losses,
+            })
+            fig_loss = px.line(
+                loss_df,
+                x="Epoch",
+                y="Training loss",
+                title="Neural network learning curve",
+            )
+            fig_loss.update_layout(
+                height=360,
+                margin=dict(t=60, b=20, l=20, r=20),
+            )
+            st.plotly_chart(fig_loss, use_container_width=True)
         else:
-            st.warning("Classic ML wins on this dataset, so deep learning is not worth it here.")
-        fig = go.Figure(go.Scatter(y=net.loss_curve_, mode="lines", line_color="#2f6fed"))
-        fig.update_layout(title="Training loss per epoch", xaxis_title="Epoch",
-                          yaxis_title="Loss", height=320)
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("If a classic model such as Random Forest scores the same or better, "
-                   "prefer it: deep learning is only worth its cost when it wins clearly.")
+            st.info("A training loss curve is not available for this model.")
+
+    # Detailed results
+    with st.expander("🔍 Explore detailed results"):
+        if is_clf:
+            st.markdown("#### Classification report")
+            st.code(
+                classification_report(
+                    results["y_test"],
+                    results["pred"],
+                    zero_division=0,
+                )
+            )
+
+            st.markdown("#### Neural network confusion matrix")
+            cm = confusion_matrix(results["y_test"], results["pred"])
+            cm_fig = px.imshow(
+                cm,
+                text_auto=True,
+                aspect="auto",
+                title="Actual vs predicted classes",
+                labels={
+                    "x": "Predicted class",
+                    "y": "Actual class",
+                    "color": "Count",
+                },
+            )
+            st.plotly_chart(cm_fig, use_container_width=True)
+        else:
+            actual = np.asarray(results["y_test"], dtype=float)
+            predicted = np.asarray(results["pred"], dtype=float)
+
+            residual_df = pd.DataFrame({
+                "Actual": actual,
+                "Predicted": predicted,
+                "Residual": actual - predicted,
+            })
+
+            st.markdown("#### Actual vs predicted")
+            actual_fig = px.scatter(
+                residual_df,
+                x="Actual",
+                y="Predicted",
+                title="Actual vs predicted values",
+            )
+            st.plotly_chart(actual_fig, use_container_width=True)
+
+            st.markdown("#### Prediction errors")
+            residual_fig = px.scatter(
+                residual_df,
+                x="Predicted",
+                y="Residual",
+                title="Residual plot",
+            )
+            residual_fig.add_hline(y=0, line_dash="dash")
+            st.plotly_chart(residual_fig, use_container_width=True)
+
+    st.caption(
+        "These scores are comparisons on the same held-out test split, "
+        "not proof that one model will perform better on future data."
+    )
 
 
 # ---------------------------------------------------------------- Security
