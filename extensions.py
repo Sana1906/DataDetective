@@ -10,6 +10,22 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from sklearn.metrics import classification_report, confusion_matrix
+import time
+import warnings
+from io import StringIO
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
+    r2_score,
+    mean_absolute_error,
+    mean_squared_error,
+)
 import streamlit as st
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, r2_score
@@ -140,29 +156,28 @@ def render_cloud(df):
 def render_dl(df, info, prep_features):
     st.markdown("## 🧠 Deep Learning Lab")
     st.caption(
-        "Train a neural network, compare it with Random Forest, "
-        "and explore how the model learns from your dataset."
+        "Train a neural network, evaluate its performance, compare it "
+        "with Random Forest, and investigate prediction quality."
     )
 
     target_candidates = info.get("target_candidates", [])
     if not target_candidates:
-        st.warning("No suitable target columns were detected in this dataset.")
+        st.warning("No suitable target columns were detected.")
         return
 
-    # Dataset overview
     numeric_count = len(df.select_dtypes(include="number").columns)
-    overview = st.columns(4)
 
-    overview[0].metric("Dataset rows", f"{len(df):,}")
-    overview[1].metric("Total columns", f"{len(df.columns):,}")
-    overview[2].metric("Numeric columns", f"{numeric_count:,}")
-    overview[3].metric("Available targets", f"{len(target_candidates):,}")
+    st.markdown("### 📊 Dataset overview")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Dataset rows", f"{len(df):,}")
+    c2.metric("Total columns", f"{len(df.columns):,}")
+    c3.metric("Numeric columns", f"{numeric_count:,}")
+    c4.metric("Available targets", len(target_candidates))
 
     st.divider()
-
-    # Model configuration
     st.markdown("### ⚙️ Model configuration")
-    left, right = st.columns([1, 1])
+
+    left, right = st.columns(2)
 
     with left:
         target = st.selectbox(
@@ -170,9 +185,8 @@ def render_dl(df, info, prep_features):
             target_candidates,
             key="dl_target",
         )
-
         layers = st.selectbox(
-            "🧩 Neural network architecture",
+            "🧩 Hidden-layer architecture",
             ["(64,)", "(64, 32)", "(128, 64, 32)"],
             index=1,
             key="dl_layers",
@@ -180,35 +194,43 @@ def render_dl(df, info, prep_features):
 
     with right:
         epochs = st.slider(
-            "🔁 Training epochs",
+            "🔁 Maximum training iterations",
             min_value=50,
             max_value=500,
             value=200,
             step=50,
             key="dl_epochs",
         )
-
-        feats = [c for c in df.columns if c != target][:12]
-        st.info(
-            f"**Target:** `{target}`\n\n"
-            f"**Input features:** {len(feats)}\n\n"
-            f"**Hidden layers:** {layers}\n\n"
-            f"**Maximum iterations:** {epochs}"
+        test_fraction = st.select_slider(
+            "Test-set proportion",
+            options=[0.15, 0.20, 0.25, 0.30],
+            value=0.25,
+            format_func=lambda x: f"{int(x * 100)}%",
+            key="dl_test_fraction",
         )
 
-    st.caption(
-        "The target is what the model predicts. Input features are the "
-        "columns used to make that prediction."
+    feats = [c for c in df.columns if c != target][:12]
+
+    st.info(
+        f"**Target:** `{target}`  ·  "
+        f"**Input features:** {len(feats)}  ·  "
+        f"**Hidden layers:** {layers}  ·  "
+        f"**Test set:** {test_fraction:.0%}"
     )
 
-    train_clicked = st.button(
-        "🚀 Train and compare models",
+    st.caption(
+        "The target is the value being predicted. The first 12 available "
+        "non-target columns are used as input features."
+    )
+
+    if st.button(
+        "🚀 Train and evaluate models",
         type="primary",
         use_container_width=True,
         key="dl_train_button",
-    )
+    ):
+        st.session_state.pop("dl_results", None)
 
-    if train_clicked:
         if not feats:
             st.error("The dataset needs at least one input feature.")
             return
@@ -220,158 +242,300 @@ def render_dl(df, info, prep_features):
                 st.error("At least 50 valid rows are required for training.")
                 return
 
-            if len(set(y)) < 2 and is_clf:
-                st.error("The classification target needs at least two classes.")
+            y_array = np.asarray(y).ravel()
+
+            if pd.isna(y_array).any():
+                st.error("The target still contains missing values after preprocessing.")
                 return
 
+            if is_clf and len(np.unique(y_array)) < 2:
+                st.error("Classification requires at least two target classes.")
+                return
+
+            if not is_clf and not np.issubdtype(y_array.dtype, np.number):
+                st.error(
+                    "The regression target must be numeric. "
+                    "Choose a suitable target or review preprocessing."
+                )
+                return
+
+            # Preserve class proportions when possible.
+            stratify_y = None
+            if is_clf:
+                _, counts = np.unique(y_array, return_counts=True)
+                if len(counts) > 1 and counts.min() >= 2:
+                    stratify_y = y_array
+
             Xtr, Xte, ytr, yte = train_test_split(
-                X, y, test_size=0.25, random_state=42
+                X,
+                y_array,
+                test_size=test_fraction,
+                random_state=42,
+                stratify=stratify_y,
             )
 
-            sc = StandardScaler().fit(Xtr)
-            Xtr_scaled = sc.transform(Xtr)
+            sc = StandardScaler()
+            Xtr_scaled = sc.fit_transform(Xtr)
             Xte_scaled = sc.transform(Xte)
 
-            cls = MLPClassifier if is_clf else MLPRegressor
             sizes = {
                 "(64,)": (64,),
                 "(64, 32)": (64, 32),
                 "(128, 64, 32)": (128, 64, 32),
             }[layers]
 
-            net = cls(
+            net_cls = MLPClassifier if is_clf else MLPRegressor
+            rf_cls = RandomForestClassifier if is_clf else RandomForestRegressor
+
+            net = net_cls(
                 hidden_layer_sizes=sizes,
                 max_iter=epochs,
                 random_state=42,
+                early_stopping=False,
             )
-
-            rf_cls = RandomForestClassifier if is_clf else RandomForestRegressor
             rf = rf_cls(n_estimators=150, random_state=42)
 
-            with st.spinner("Training neural network and Random Forest..."):
-                net.fit(Xtr_scaled, ytr)
-                pred = net.predict(Xte_scaled)
-                rf.fit(Xtr, ytr)
-                rf_pred = rf.predict(Xte)
+            convergence_messages = []
+            start_time = time.perf_counter()
 
-            score = (
-                accuracy_score(yte, pred)
-                if is_clf else r2_score(yte, pred)
-            )
-            rf_score = (
-                accuracy_score(yte, rf_pred)
-                if is_clf else r2_score(yte, rf_pred)
-            )
+            with st.spinner("Training both models..."):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", ConvergenceWarning)
+
+                    net.fit(Xtr_scaled, ytr)
+                    net_pred = net.predict(Xte_scaled)
+
+                    rf.fit(Xtr, ytr)
+                    rf_pred = rf.predict(Xte)
+
+                convergence_messages = [
+                    str(w.message)
+                    for w in caught
+                    if issubclass(w.category, ConvergenceWarning)
+                ]
+
+            elapsed = time.perf_counter() - start_time
+
+            # Calculate task-appropriate metrics.
+            if is_clf:
+                metrics = {
+                    "Accuracy": accuracy_score(yte, net_pred),
+                    "Precision (weighted)": precision_score(
+                        yte, net_pred, average="weighted", zero_division=0
+                    ),
+                    "Recall (weighted)": recall_score(
+                        yte, net_pred, average="weighted", zero_division=0
+                    ),
+                    "F1-score (weighted)": f1_score(
+                        yte, net_pred, average="weighted", zero_division=0
+                    ),
+                }
+                rf_score = accuracy_score(yte, rf_pred)
+                primary_score = metrics["Accuracy"]
+                primary_label = "Accuracy"
+            else:
+                actual = np.asarray(yte, dtype=float)
+                predicted = np.asarray(net_pred, dtype=float)
+
+                metrics = {
+                    "MAE": mean_absolute_error(actual, predicted),
+                    "RMSE": float(np.sqrt(mean_squared_error(actual, predicted))),
+                    "R²": r2_score(actual, predicted),
+                }
+                rf_score = r2_score(yte, rf_pred)
+                primary_score = metrics["R²"]
+                primary_label = "R² score"
+
+            # Permutation importance: measures the effect of shuffling
+            # each input feature on held-out model performance.
+            importance = None
+            importance_error = None
+
+            try:
+                importance_result = permutation_importance(
+                    net,
+                    Xte_scaled,
+                    yte,
+                    n_repeats=3,
+                    random_state=42,
+                    scoring="accuracy" if is_clf else "r2",
+                    n_jobs=1,
+                )
+
+                feature_names = (
+                    list(X.columns)
+                    if hasattr(X, "columns")
+                    else feats[:X.shape[1]]
+                )
+
+                if len(feature_names) == len(importance_result.importances_mean):
+                    importance = pd.DataFrame({
+                        "Feature": feature_names,
+                        "Importance": importance_result.importances_mean,
+                    }).sort_values("Importance", ascending=False)
+
+            except Exception as exc:
+                importance_error = str(exc)
 
             st.session_state["dl_results"] = {
                 "target": target,
                 "is_clf": is_clf,
-                "score": score,
+                "metrics": metrics,
+                "score": primary_score,
                 "rf_score": rf_score,
+                "primary_label": primary_label,
                 "loss_curve": list(getattr(net, "loss_curve_", [])),
-                "y_test": list(yte),
-                "pred": list(pred),
-                "rf_pred": list(rf_pred),
+                "y_test": np.asarray(yte).tolist(),
+                "pred": np.asarray(net_pred).tolist(),
+                "rf_pred": np.asarray(rf_pred).tolist(),
                 "features": feats,
                 "layers": layers,
                 "epochs": epochs,
                 "rows": len(X),
+                "train_rows": len(Xtr),
+                "test_rows": len(Xte),
+                "training_seconds": elapsed,
+                "iterations": getattr(net, "n_iter_", None),
+                "converged": len(convergence_messages) == 0,
+                "convergence_messages": convergence_messages,
+                "importance": (
+                    importance.to_dict("records")
+                    if importance is not None else None
+                ),
+                "importance_error": importance_error,
+                "test_fraction": test_fraction,
             }
 
-        except Exception as e:
-            st.error(f"Training failed: {e}")
+        except Exception as exc:
+            st.error(f"Training failed: {exc}")
             return
 
     results = st.session_state.get("dl_results")
 
     if not results:
-        st.markdown("### 📊 Your results will appear here")
+        st.markdown("### 📈 Your model results")
         st.info(
-            "Configure your model above and select **Train and compare models** "
-            "to generate performance metrics and learning visualizations."
+            "Choose your target and settings above, then train the models "
+            "to see evaluation metrics, learning curves, and model insights."
         )
         return
 
     if results["target"] != target:
-        st.info("Your target selection changed. Train again to update the results.")
+        st.info("The selected target differs from the last run. Train again to refresh results.")
         return
 
     is_clf = results["is_clf"]
     score = results["score"]
     rf_score = results["rf_score"]
-    label = "Accuracy" if is_clf else "R² score"
 
     st.divider()
-    st.markdown("### 📈 Model performance")
+    st.markdown("### 📈 Evaluation summary")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Neural Network", f"{score:.3f}")
-    m2.metric("Random Forest", f"{rf_score:.3f}")
-    m3.metric(
-        "Difference",
-        f"{score - rf_score:+.3f}",
-        help="Positive means the neural network scored higher.",
-    )
+    a, b, c, d = st.columns(4)
+    a.metric(results["primary_label"], f"{score:.3f}")
+    b.metric("Random Forest score", f"{rf_score:.3f}")
+    c.metric("Training time", f"{results['training_seconds']:.2f} s")
+    d.metric("Training iterations", results["iterations"] or "N/A")
+
+    if results["converged"]:
+        st.success(
+            "No neural-network convergence warning was recorded. "
+            "This does not guarantee that the model generalizes well."
+        )
+    else:
+        st.warning(
+            "The neural network reached its iteration limit or reported "
+            "a convergence warning. Consider adjusting settings and retraining."
+        )
+        for message in results["convergence_messages"]:
+            st.caption(message)
 
     if score > rf_score + 0.01:
-        st.success("The neural network scored higher on this test split.")
+        st.info("The neural network scored higher on the selected comparison metric.")
     elif rf_score > score + 0.01:
-        st.info("Random Forest scored higher on this test split.")
+        st.info("Random Forest scored higher on the selected comparison metric.")
     else:
-        st.info("The two models performed similarly on this test split.")
+        st.info("The models scored similarly on the selected comparison metric.")
 
     st.caption(
-        f"Metric: {label}. Results use a held-out test split and may vary "
-        "with different datasets or random splits."
+        "For classification, the comparison uses accuracy. For regression, "
+        "it uses R². Higher is better for these two comparison metrics."
     )
+
+    st.markdown("### 🧾 Neural network metrics")
+    metric_cols = st.columns(min(4, len(results["metrics"])))
+    for i, (name, value) in enumerate(results["metrics"].items()):
+        metric_cols[i % len(metric_cols)].metric(name, f"{value:.4f}")
 
     chart_col, loss_col = st.columns(2)
 
     with chart_col:
-        comparison = pd.DataFrame({
+        compare_df = pd.DataFrame({
             "Model": ["Neural Network", "Random Forest"],
-            label: [score, rf_score],
+            "Score": [score, rf_score],
         })
-
-        fig_compare = px.bar(
-            comparison,
+        compare_fig = px.bar(
+            compare_df,
             x="Model",
-            y=label,
+            y="Score",
             color="Model",
-            title="Model score comparison",
             text_auto=".3f",
+            title=f"Model comparison — {results['primary_label']}",
         )
-        fig_compare.update_layout(
+        compare_fig.update_layout(
             height=360,
             showlegend=False,
             margin=dict(t=60, b=20, l=20, r=20),
         )
-        st.plotly_chart(fig_compare, use_container_width=True)
+        st.plotly_chart(compare_fig, use_container_width=True)
 
     with loss_col:
         losses = results["loss_curve"]
-
         if losses:
             loss_df = pd.DataFrame({
-                "Epoch": range(1, len(losses) + 1),
+                "Iteration": range(1, len(losses) + 1),
                 "Training loss": losses,
             })
-            fig_loss = px.line(
+            loss_fig = px.line(
                 loss_df,
-                x="Epoch",
+                x="Iteration",
                 y="Training loss",
-                title="Neural network learning curve",
+                title="Neural network training loss",
             )
-            fig_loss.update_layout(
+            loss_fig.update_layout(
                 height=360,
                 margin=dict(t=60, b=20, l=20, r=20),
             )
-            st.plotly_chart(fig_loss, use_container_width=True)
+            st.plotly_chart(loss_fig, use_container_width=True)
         else:
-            st.info("A training loss curve is not available for this model.")
+            st.info("No training loss curve is available.")
 
-    # Detailed results
-    with st.expander("🔍 Explore detailed results"):
+    with st.expander("🔎 Feature importance"):
+        if results["importance"]:
+            importance_df = pd.DataFrame(results["importance"])
+            importance_fig = px.bar(
+                importance_df.head(12).sort_values("Importance"),
+                x="Importance",
+                y="Feature",
+                orientation="h",
+                title="Permutation importance on held-out data",
+            )
+            importance_fig.update_layout(height=400)
+            st.plotly_chart(importance_fig, use_container_width=True)
+            st.caption(
+                "Permutation importance measures how the chosen score changes "
+                "when a feature is shuffled. Negative values can occur; this "
+                "is not a causal explanation."
+            )
+        else:
+            st.info(
+                "Feature importance could not be calculated for this run. "
+                "Check that preprocessing preserves the input feature mapping."
+            )
+            if results.get("importance_error"):
+                st.caption(results["importance_error"])
+
+    with st.expander("🧪 Detailed evaluation"):
         if is_clf:
             st.markdown("#### Classification report")
             st.code(
@@ -382,8 +546,11 @@ def render_dl(df, info, prep_features):
                 )
             )
 
-            st.markdown("#### Neural network confusion matrix")
-            cm = confusion_matrix(results["y_test"], results["pred"])
+            st.markdown("#### Confusion matrix")
+            cm = confusion_matrix(
+                results["y_test"],
+                results["pred"],
+            )
             cm_fig = px.imshow(
                 cm,
                 text_auto=True,
@@ -396,6 +563,7 @@ def render_dl(df, info, prep_features):
                 },
             )
             st.plotly_chart(cm_fig, use_container_width=True)
+
         else:
             actual = np.asarray(results["y_test"], dtype=float)
             predicted = np.asarray(results["pred"], dtype=float)
@@ -406,7 +574,6 @@ def render_dl(df, info, prep_features):
                 "Residual": actual - predicted,
             })
 
-            st.markdown("#### Actual vs predicted")
             actual_fig = px.scatter(
                 residual_df,
                 x="Actual",
@@ -415,21 +582,54 @@ def render_dl(df, info, prep_features):
             )
             st.plotly_chart(actual_fig, use_container_width=True)
 
-            st.markdown("#### Prediction errors")
             residual_fig = px.scatter(
                 residual_df,
                 x="Predicted",
                 y="Residual",
-                title="Residual plot",
+                title="Prediction residuals",
             )
             residual_fig.add_hline(y=0, line_dash="dash")
             st.plotly_chart(residual_fig, use_container_width=True)
 
-    st.caption(
-        "These scores are comparisons on the same held-out test split, "
-        "not proof that one model will perform better on future data."
-    )
+    # Downloadable plain-text evaluation report.
+    report_lines = [
+        "DATA DETECTIVE — DEEP LEARNING EVALUATION REPORT",
+        "=" * 48,
+        f"Target: {results['target']}",
+        f"Task: {'Classification' if is_clf else 'Regression'}",
+        f"Input features: {', '.join(results['features'])}",
+        f"Hidden layers: {results['layers']}",
+        f"Maximum iterations configured: {results['epochs']}",
+        f"Rows used: {results['rows']}",
+        f"Training rows: {results['train_rows']}",
+        f"Test rows: {results['test_rows']}",
+        f"Training time: {results['training_seconds']:.2f} seconds",
+        f"Iterations completed: {results['iterations']}",
+        f"Convergence warning recorded: {not results['converged']}",
+        "",
+        "NEURAL NETWORK METRICS",
+    ]
 
+    report_lines.extend(
+        f"{name}: {value:.5f}"
+        for name, value in results["metrics"].items()
+    )
+    report_lines.extend([
+        "",
+        f"Random Forest {results['primary_label']}: {rf_score:.5f}",
+        "",
+        "Limitations: These results use one held-out test split. "
+        "They do not guarantee future performance or prove causality.",
+    ])
+
+    st.download_button(
+        "📥 Download evaluation report (.txt)",
+        data="\n".join(report_lines),
+        file_name="datadetective_deep_learning_report.txt",
+        mime="text/plain",
+        use_container_width=True,
+        key="dl_download_report",
+    )
 
 # ---------------------------------------------------------------- Security
 def render_security(df):
