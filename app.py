@@ -1593,7 +1593,7 @@ with st.container(border=True):
             st.markdown(cleaned_line)
         else:
             st.write(cleaned_line)
-        )
+        
 
         # ---- Download Investigation Report ----
 st.markdown("### 📥 Download Investigation Report")
