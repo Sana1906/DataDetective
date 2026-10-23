@@ -960,7 +960,7 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
             for w in ml["leakage_warnings"]:
                 lines.append(f"  - {w.replace('**', '')}")
 
-  # Privacy scan summary
+ # Privacy scan summary
     lines.append("\n5. PRIVACY & SECURITY")
     privacy_results = privacy_scan(df)
     sensitive = privacy_results[
@@ -999,7 +999,6 @@ else:
     lines.append("End of automated report. This report is model-generated and should")
     lines.append("be reviewed by a human analyst before use in decision-making.")
     return "\n".join(lines)
-
 
 # ----------------------------------------------------------------------
 # ---- Professional application shell ----
