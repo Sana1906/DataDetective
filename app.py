@@ -924,10 +924,12 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
     lines.append(f"Missing values: {quality['missing_pct']}% of all cells")
     lines.append(f"Duplicate rows: {quality['duplicates']} ({quality['duplicate_pct']}%)")
     lines.append(f"Total outlier values (IQR method): {quality['total_outliers']}")
+
     if quality["high_corr_pairs"]:
         lines.append("Highly correlated feature pairs (>0.9):")
         for a, b, v in quality["high_corr_pairs"]:
             lines.append(f"  - {a} <-> {b}: {v}")
+
     if quality["imbalanced_cols"]:
         lines.append("Imbalanced categorical columns:")
         for c, pct in quality["imbalanced_cols"]:
@@ -942,10 +944,13 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
         ml = st.session_state["ml_results"]
         lines.append("\n4. MACHINE LEARNING RESULTS")
         lines.append(f"Target column: {ml['target']}")
-        lines.append(f"Problem type: {'Classification' if ml['is_classification'] else 'Regression'}")
+        lines.append(
+            f"Problem type: {'Classification' if ml['is_classification'] else 'Regression'}"
+        )
         lines.append(f"Best model: {ml['best_name']}")
         lines.append("\nModel comparison:")
         lines.append(ml["results_df"].to_string(index=False))
+
         best_rows = ml["results_df"][
             ml["results_df"]["Model"] == ml["best_name"]
         ]
@@ -955,19 +960,25 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
             for metric, value in best_rows.iloc[0].items():
                 if metric != "Model":
                     lines.append(f"- {metric}: {value}")
+
         if ml["leakage_warnings"]:
             lines.append("\nData leakage warnings:")
             for w in ml["leakage_warnings"]:
                 lines.append(f"  - {w.replace('**', '')}")
 
- # Privacy scan summary
+    # Privacy scan summary
     lines.append("\n5. PRIVACY & SECURITY")
     privacy_results = privacy_scan(df)
+
     sensitive = privacy_results[
-    ~privacy_results["Detection"].str.contains("Normal", case=False, na=False)
-]
+        ~privacy_results["Detection"].str.contains(
+            "Normal", case=False, na=False
+        )
+    ]
+
     lines.append(f"Columns scanned: {len(privacy_results)}")
     lines.append(f"Columns flagged as potentially sensitive: {len(sensitive)}")
+
     if not sensitive.empty:
         lines.append("Review these columns before sharing the dataset:")
         for column in sensitive["Column"].tolist():
@@ -980,24 +991,36 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
     anomaly_result, anomaly_message = detect_anomalies(df, info)
     lines.append(str(anomaly_message))
 
-if anomaly_result is not None and "_anomaly" in anomaly_result.columns:
-    anomaly_count = int(anomaly_result["_anomaly"].sum())
-    lines.append(f"Records flagged as unusual: {anomaly_count}")
-else:
-    lines.append("Anomaly count unavailable for this dataset.")
+    if anomaly_result is not None and "_anomaly" in anomaly_result.columns:
+        anomaly_count = int(anomaly_result["_anomaly"].sum())
+        lines.append(f"Records flagged as unusual: {anomaly_count}")
+    else:
+        lines.append("Anomaly count unavailable for this dataset.")
 
+    # Recommendations
     lines.append("\n7. RECOMMENDATIONS")
+
     if quality["score"] < 65:
-        lines.append("  - Clean the dataset (handle missing values, duplicates, outliers) before modeling.")
+        lines.append(
+            "  - Clean the dataset (handle missing values, duplicates, outliers) before modeling."
+        )
+
     if quality["imbalanced_cols"]:
-        lines.append("  - Consider resampling or class-weighting for imbalanced target classes.")
+        lines.append(
+            "  - Consider resampling or class-weighting for imbalanced target classes."
+        )
+
     if quality["high_corr_pairs"]:
         lines.append("  - Review highly correlated features for redundancy.")
-    lines.append("  - Validate any 'unexpected discoveries' against domain knowledge before acting on them.")
+
+    lines.append(
+        "  - Validate any 'unexpected discoveries' against domain knowledge before acting on them."
+    )
 
     lines.append("\n" + "=" * 60)
     lines.append("End of automated report. This report is model-generated and should")
     lines.append("be reviewed by a human analyst before use in decision-making.")
+
     return "\n".join(lines)
 
 # ----------------------------------------------------------------------
