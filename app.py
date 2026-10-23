@@ -966,8 +966,6 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
     sensitive = privacy_results[
     ~privacy_results["Detection"].str.contains("Normal", case=False, na=False)
 ]
-    
-    ]
     lines.append(f"Columns scanned: {len(privacy_results)}")
     lines.append(f"Columns flagged as potentially sensitive: {len(sensitive)}")
     if not sensitive.empty:
