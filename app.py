@@ -1603,7 +1603,6 @@ report_format = st.selectbox(
     "Report format",
     ["PDF (.pdf)", "Word (.docx)", "Text (.txt)"],
     key="investigation_report_format"
-)
 
 if report_format == "Text (.txt)":
     st.download_button(
