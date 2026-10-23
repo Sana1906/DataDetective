@@ -946,6 +946,15 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
         lines.append(f"Best model: {ml['best_name']}")
         lines.append("\nModel comparison:")
         lines.append(ml["results_df"].to_string(index=False))
+        best_rows = ml["results_df"][
+            ml["results_df"]["Model"] == ml["best_name"]
+        ]
+
+        if not best_rows.empty:
+            lines.append("\nBest model performance metrics:")
+            for metric, value in best_rows.iloc[0].items():
+                if metric != "Model":
+                    lines.append(f"- {metric}: {value}")
         if ml["leakage_warnings"]:
             lines.append("\nData leakage warnings:")
             for w in ml["leakage_warnings"]:
