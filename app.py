@@ -1564,10 +1564,28 @@ else:
             discoveries
         )
 
-        st.text_area(
-            "Report preview",
-            report_text,
-            height=430
+        st.markdown("### 📄 Investigation Report Preview")
+
+with st.container(border=True):
+    st.markdown("#### 🔎 Automated Data Investigation Report")
+    st.caption(
+        f"Generated on {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
+    )
+
+    report_sections = report_text.split("\n")
+    for line in report_sections:
+        cleaned_line = line.strip()
+
+        if not cleaned_line:
+            continue
+        elif cleaned_line.startswith("===="):
+            st.divider()
+        elif cleaned_line.split(".", 1)[0].isdigit() and "." in cleaned_line:
+    st.markdown(f"### {cleaned_line}")
+        elif cleaned_line.startswith("-"):
+            st.markdown(cleaned_line)
+        else:
+            st.write(cleaned_line)
         )
 
         st.download_button(
