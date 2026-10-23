@@ -940,36 +940,37 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
         clean = d.replace("**", "")
         lines.append(f"  - {clean}")
 
-   lines.append("\n4. MACHINE LEARNING RESULTS")
+   # Machine learning results
+    lines.append("\n4. MACHINE LEARNING RESULTS")
 
-if "ml_results" in st.session_state:
-    ml = st.session_state["ml_results"]
+    if "ml_results" in st.session_state:
+        ml = st.session_state["ml_results"]
 
-    lines.append(f"Target column: {ml['target']}")
-    lines.append(
-        f"Problem type: {'Classification' if ml['is_classification'] else 'Regression'}"
-    )
-    lines.append(f"Best model: {ml['best_name']}")
-    lines.append("\nModel comparison:")
-    lines.append(ml["results_df"].to_string(index=False))
+        lines.append(f"Target column: {ml['target']}")
+        lines.append(
+            f"Problem type: {'Classification' if ml['is_classification'] else 'Regression'}"
+        )
+        lines.append(f"Best model: {ml['best_name']}")
+        lines.append("\nModel comparison:")
+        lines.append(ml["results_df"].to_string(index=False))
 
-    best_rows = ml["results_df"][
-        ml["results_df"]["Model"] == ml["best_name"]
-    ]
+        best_rows = ml["results_df"][
+            ml["results_df"]["Model"] == ml["best_name"]
+        ]
 
-    if not best_rows.empty:
-        lines.append("\nBest model performance metrics:")
-        for metric, value in best_rows.iloc[0].items():
-            if metric != "Model":
-                lines.append(f"- {metric}: {value}")
+        if not best_rows.empty:
+            lines.append("\nBest model performance metrics:")
+            for metric, value in best_rows.iloc[0].items():
+                if metric != "Model":
+                    lines.append(f"- {metric}: {value}")
 
-    if ml["leakage_warnings"]:
-        lines.append("\nData leakage warnings:")
-        for warning in ml["leakage_warnings"]:
-            lines.append(f"  - {warning.replace('**', '')}")
+        if ml["leakage_warnings"]:
+            lines.append("\nData leakage warnings:")
+            for warning in ml["leakage_warnings"]:
+                lines.append(f"  - {warning.replace('**', '')}")
 
-else:
-    lines.append("Machine learning has not been run for this dataset.")
+    else:
+        lines.append("Machine learning has not been run for this dataset.")
     # Privacy scan summary
     lines.append("\n5. PRIVACY & SECURITY")
     privacy_results = privacy_scan(df)
