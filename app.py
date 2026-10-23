@@ -358,6 +358,19 @@ st.markdown(
     #MainMenu, footer {
         visibility: hidden;
     }
+    
+    /* Reset workspace button color */
+section[data-testid="stSidebar"] button {
+    background-color: #7C3AED !important;
+    color: #FFFFFF !important;
+    border: 1px solid #A78BFA !important;
+    border-radius: 12px !important;
+}
+
+section[data-testid="stSidebar"] button:hover {
+    background-color: #6D28D9 !important;
+    color: #FFFFFF !important;
+}
     </style>
     """,
     unsafe_allow_html=True,
