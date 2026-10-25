@@ -528,6 +528,22 @@ def privacy_scan(df: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------------------------------------
 # ---- STAGE 3: Automated, context-aware EDA ----
 # ----------------------------------------------------------------------
+def _correlation_frame(df: pd.DataFrame, numeric_cols: list, categorical_cols: list) -> pd.DataFrame:
+    """Numeric columns plus two-class columns (e.g. churn Yes/No) encoded as 0/1."""
+    data = df[[c for c in numeric_cols if df[c].nunique() > 1]].copy()
+    for c in categorical_cols:
+        vals = sorted(df[c].dropna().astype(str).unique())
+        if len(vals) == 2:
+            coded = df[c].astype(str).where(df[c].notna()).map({vals[0]: 0, vals[1]: 1})
+            data[f"{c} ({vals[1]}=1)"] = coded
+    return data
+
+
+def _strength(r: float) -> str:
+    r = abs(r)
+    return "negligible" if r < 0.1 else "weak" if r < 0.3 else "moderate" if r < 0.5 else "strong"
+
+
 def render_eda(df: pd.DataFrame, info: dict):
     id_cols = set(info.get("id_cols", []))
     numeric_cols = [c for c in info["numeric_cols"] if c not in id_cols]
@@ -579,15 +595,33 @@ def render_eda(df: pd.DataFrame, info: dict):
     else:
         st.info("No low-cardinality categorical columns to chart.")
 
-    corr_cols = [c for c in numeric_cols if df[c].nunique() > 1]
-    if len(corr_cols) > 1:
+    data = _correlation_frame(df, numeric_cols, categorical_cols)
+    if data.shape[1] > 1:
         st.subheader("Correlation Analysis")
-        corr = df[corr_cols].corr(numeric_only=True)
+        corr = data.corr()
+        lower = ~np.triu(np.ones(corr.shape, dtype=bool))      # each pair once, no diagonal
+        shown = corr.where(lower).iloc[1:, :-1]
         fig = px.imshow(
-            corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-            title="Correlation heatmap (identifier columns excluded)",
+            shown, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
+            aspect="auto", title="Correlation heatmap (each pair shown once)",
         )
+        fig.update_layout(height=max(380, 75 * len(shown) + 170), margin=dict(l=20, r=20, t=60, b=20))
+        fig.update_xaxes(tickangle=-35, automargin=True)
+        fig.update_yaxes(automargin=True)
         st.plotly_chart(fig, use_container_width=True)
+
+        pairs = corr.where(lower).stack()
+        pairs = pairs.reindex(pairs.abs().sort_values(ascending=False).index).head(3)
+        if pairs.abs().max() < 0.1:
+            st.info("All relationships are negligible (|r| below 0.10): in this data the columns "
+                    "move independently of each other.")
+        else:
+            st.markdown("**Strongest relationships**")
+            for (a_col, b_col), r in pairs.items():
+                direction = "move together" if r > 0 else "move in opposite directions"
+                st.markdown(f"- **{a_col}** and **{b_col}**: r = {r:+.2f} ({_strength(r)}), they {direction}.")
+        st.caption("Correlation measures straight-line relationships only. A value near 0 does not "
+                   "prove two columns are unrelated, and correlation does not show cause and effect.")
 
     if len(numeric_cols) >= 2:
         st.subheader("Feature Relationship Explorer")
@@ -599,8 +633,26 @@ def render_eda(df: pd.DataFrame, info: dict):
             color_by = st.selectbox("Color by (optional)", ["None"] + categorical_cols, key="rel_color")
             color_by = None if color_by == "None" else color_by
         plot_df = df.sample(5000, random_state=0) if len(df) > 5000 else df
-        fig = px.scatter(plot_df, x=x, y=y, color=color_by, title=f"{x} vs {y}", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+        x_disc, y_disc = df[x].nunique() <= 12, df[y].nunique() <= 12
+        if x == y:
+            st.info("Choose two different columns.")
+        else:
+            if y_disc and not x_disc:       # e.g. complaints (0-6) vs usage: compare distributions
+                fig = px.box(plot_df, x=y, y=x, color=color_by, template="plotly_white",
+                             title=f"{x} for each value of {y}")
+            elif x_disc and not y_disc:
+                fig = px.box(plot_df, x=x, y=y, color=color_by, template="plotly_white",
+                             title=f"{y} for each value of {x}")
+            elif x_disc and y_disc:
+                fig = px.density_heatmap(plot_df, x=x, y=y, text_auto=True,
+                                         color_continuous_scale="Blues", title=f"{x} vs {y} (record counts)")
+            else:
+                fig = px.scatter(plot_df, x=x, y=y, color=color_by, opacity=0.55,
+                                 template="plotly_white", title=f"{x} vs {y}")
+            st.plotly_chart(fig, use_container_width=True)
+            if x_disc or y_disc:
+                st.caption("One of these columns has only a few distinct values, so a box plot is used "
+                           "instead of a scatter plot, which would pile points into straight lines.")
         if len(df) > 5000:
             st.caption("Showing a random sample of 5,000 rows to keep the chart responsive.")
 
