@@ -529,8 +529,9 @@ def privacy_scan(df: pd.DataFrame) -> pd.DataFrame:
 # ---- STAGE 3: Automated, context-aware EDA ----
 # ----------------------------------------------------------------------
 def _correlation_frame(df: pd.DataFrame, numeric_cols: list, categorical_cols: list) -> pd.DataFrame:
-    """Numeric columns plus two-class columns (e.g. churn Yes/No) encoded as 0/1."""
-    data = df[[c for c in numeric_cols if df[c].nunique() > 1]].copy()
+    """Numeric columns plus binary categoricals encoded as 0/1 for correlation."""
+    usable_num = [c for c in numeric_cols if df[c].nunique(dropna=True) > 1]
+    data = df[usable_num].copy() if usable_num else pd.DataFrame(index=df.index)
     for c in categorical_cols:
         vals = sorted(df[c].dropna().astype(str).unique())
         if len(vals) == 2:
@@ -541,120 +542,451 @@ def _correlation_frame(df: pd.DataFrame, numeric_cols: list, categorical_cols: l
 
 def _strength(r: float) -> str:
     r = abs(r)
-    return "negligible" if r < 0.1 else "weak" if r < 0.3 else "moderate" if r < 0.5 else "strong"
+    if r < 0.1:
+        return "negligible"
+    if r < 0.3:
+        return "weak"
+    if r < 0.5:
+        return "moderate"
+    if r < 0.7:
+        return "strong"
+    return "very strong"
+
+
+def _safe_sample(df: pd.DataFrame, n: int = 5000) -> pd.DataFrame:
+    """Return a reproducible sample when the frame is large."""
+    if len(df) <= n:
+        return df
+    return df.sample(n, random_state=42)
 
 
 def render_eda(df: pd.DataFrame, info: dict):
+    """
+    General-purpose EDA that adapts to any tabular dataset:
+      1. Column profile (types, missing, cardinality, basic stats)
+      2. Univariate numeric distributions + summary statistics
+      3. Univariate categorical frequencies (top-N + Other for high cardinality)
+      4. Missing-value overview
+      5. Correlation matrix + strongest pairs
+      6. Interactive bivariate explorer (any column pair)
+    Identifier-like and pure free-text columns are excluded from charts
+    but still appear in the profile table.
+    """
     id_cols = set(info.get("id_cols", []))
     numeric_cols = [c for c in info["numeric_cols"] if c not in id_cols]
-    # only low-cardinality columns make a readable category chart
-    categorical_cols = [
-        c for c in info["categorical_cols"]
-        if c not in id_cols and 1 < df[c].nunique() <= 20
-    ]
-    hidden = [c for c in df.columns if c in id_cols]
-    hidden += [c for c in info["categorical_cols"]
-               if c not in id_cols and df[c].nunique() > 20]
-    if hidden:
-        st.info(
-            "Hidden from the charts because nearly every value is different "
-            f"(identifiers or free text): {', '.join(hidden)}. "
-            "A bar or histogram of such a column shows nothing useful."
-        )
+    # Keep all non-ID categoricals; high-cardinality ones are handled with top-N
+    all_cat_cols = [c for c in info["categorical_cols"] if c not in id_cols]
+    low_card_cats = [c for c in all_cat_cols if 1 < df[c].nunique(dropna=True) <= 25]
+    high_card_cats = [c for c in all_cat_cols if df[c].nunique(dropna=True) > 25]
+    datetime_cols = info.get("datetime_cols", [])
 
-    st.subheader("Distributions")
-    if numeric_cols:
-        col_choice = st.multiselect(
-            "Numeric columns to visualize",
-            numeric_cols,
-            default=numeric_cols[: min(4, len(numeric_cols))],
+    # ------------------------------------------------------------------
+    # 1. Column profile
+    # ------------------------------------------------------------------
+    st.markdown("#### Column profile")
+    st.caption(
+        "Quick inventory of every column: type, missingness, uniqueness and "
+        "basic statistics. Identifier-like columns (near-unique values) are "
+        "flagged so they are not plotted as ordinary features."
+    )
+
+    profile_rows = []
+    for c in df.columns:
+        s = df[c]
+        n_missing = int(s.isna().sum())
+        missing_pct = 100.0 * n_missing / len(df) if len(df) else 0
+        nunique = int(s.nunique(dropna=True))
+        dtype = str(s.dtype)
+        is_id = c in id_cols
+        sample_vals = (
+            s.dropna().astype(str).head(3).tolist()
+            if nunique > 0
+            else []
         )
-        cols = st.columns(2)
-        for i, c in enumerate(col_choice):
-            fig = px.histogram(
-                df, x=c, nbins=30, title=f"Distribution of {c}",
-                marginal="box", template="plotly_white",
+        sample_str = ", ".join(sample_vals) if sample_vals else "—"
+
+        row = {
+            "Column": c,
+            "Type": dtype,
+            "Missing %": round(missing_pct, 1),
+            "Unique": nunique,
+            "Identifier?": "Yes" if is_id else "",
+            "Sample values": sample_str[:80] + ("…" if len(sample_str) > 80 else ""),
+        }
+        if pd.api.types.is_numeric_dtype(s) and not is_id:
+            row["Mean"] = round(float(s.mean()), 3) if s.notna().any() else None
+            row["Std"] = round(float(s.std()), 3) if s.notna().sum() > 1 else None
+            row["Min"] = round(float(s.min()), 3) if s.notna().any() else None
+            row["Max"] = round(float(s.max()), 3) if s.notna().any() else None
+        else:
+            row["Mean"] = row["Std"] = row["Min"] = row["Max"] = None
+        profile_rows.append(row)
+
+    profile_df = pd.DataFrame(profile_rows)
+    st.dataframe(profile_df, use_container_width=True, hide_index=True)
+
+    if id_cols or high_card_cats:
+        notes = []
+        if id_cols:
+            notes.append(
+                f"**Identifier-like** (excluded from most charts): {', '.join(sorted(id_cols))}"
             )
-            cols[i % 2].plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No numeric columns detected for distribution plots.")
+        if high_card_cats:
+            notes.append(
+                f"**High-cardinality categorical** (shown as top-N + Other): "
+                f"{', '.join(high_card_cats)}"
+            )
+        st.info("  \n".join(notes))
 
-    if categorical_cols:
-        st.subheader("Category Breakdown")
-        cat_choice = st.selectbox("Categorical column", categorical_cols)
-        counts = df[cat_choice].fillna("Missing").astype(str).value_counts().reset_index()
-        counts.columns = [cat_choice, "count"]
-        counts["share"] = (counts["count"] / counts["count"].sum()).map("{:.0%}".format)
-        fig = px.bar(
-            counts, x=cat_choice, y="count", text="share",
-            title=f"Distribution of {cat_choice} (count and share of rows)",
+    # ------------------------------------------------------------------
+    # 2. Missing-value overview
+    # ------------------------------------------------------------------
+    missing_counts = df.isna().sum()
+    missing_counts = missing_counts[missing_counts > 0].sort_values(ascending=False)
+    if len(missing_counts) > 0:
+        st.markdown("#### Missing values")
+        miss_df = missing_counts.reset_index()
+        miss_df.columns = ["Column", "Missing count"]
+        miss_df["Missing %"] = (miss_df["Missing count"] / len(df) * 100).round(1)
+        fig_miss = px.bar(
+            miss_df.head(20),
+            x="Missing %",
+            y="Column",
+            orientation="h",
+            title="Columns with missing values (top 20)",
             template="plotly_white",
+            color="Missing %",
+            color_continuous_scale=["#93C5FD", "#1D4ED8"],
+        )
+        fig_miss.update_layout(
+            height=max(280, 28 * min(len(miss_df), 20) + 80),
+            showlegend=False,
+            coloraxis_showscale=False,
+            margin=dict(l=10, r=10, t=50, b=10),
+        )
+        st.plotly_chart(fig_miss, use_container_width=True)
+    else:
+        st.success("No missing values detected in any column.")
+
+    # ------------------------------------------------------------------
+    # 3. Univariate — Numeric
+    # ------------------------------------------------------------------
+    st.markdown("#### Numeric distributions")
+    if not numeric_cols:
+        st.info("No usable numeric columns found for distribution plots.")
+    else:
+        default_num = numeric_cols[: min(4, len(numeric_cols))]
+        chosen_num = st.multiselect(
+            "Select numeric columns",
+            options=numeric_cols,
+            default=default_num,
+            key="eda_num_cols",
+            help="Histograms and box plots for the selected columns.",
+        )
+        if chosen_num:
+            # Summary statistics table
+            stats_list = []
+            for c in chosen_num:
+                s = df[c].dropna()
+                if s.empty:
+                    continue
+                stats_list.append({
+                    "Column": c,
+                    "Count": int(s.count()),
+                    "Mean": round(s.mean(), 4),
+                    "Std": round(s.std(), 4) if len(s) > 1 else 0,
+                    "Min": round(s.min(), 4),
+                    "25%": round(s.quantile(0.25), 4),
+                    "Median": round(s.median(), 4),
+                    "75%": round(s.quantile(0.75), 4),
+                    "Max": round(s.max(), 4),
+                    "Skew": round(float(s.skew()), 3) if len(s) > 2 else 0,
+                })
+            if stats_list:
+                st.dataframe(
+                    pd.DataFrame(stats_list),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            plot_df = _safe_sample(df)
+            n_cols = 2 if len(chosen_num) > 1 else 1
+            grid = st.columns(n_cols)
+            for i, c in enumerate(chosen_num):
+                with grid[i % n_cols]:
+                    fig = px.histogram(
+                        plot_df,
+                        x=c,
+                        nbins=min(40, max(10, int(df[c].nunique() ** 0.5) + 5)),
+                        title=f"Distribution of {c}",
+                        marginal="box",
+                        template="plotly_white",
+                        color_discrete_sequence=["#3B82F6"],
+                    )
+                    fig.update_layout(
+                        height=320,
+                        margin=dict(l=10, r=10, t=40, b=10),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            if len(df) > 5000:
+                st.caption("Charts use a random sample of 5 000 rows for responsiveness.")
+
+    # ------------------------------------------------------------------
+    # 4. Univariate — Categorical
+    # ------------------------------------------------------------------
+    st.markdown("#### Categorical breakdowns")
+    usable_cats = low_card_cats + high_card_cats
+    if not usable_cats:
+        st.info("No categorical columns available for frequency charts.")
+    else:
+        cat_choice = st.selectbox(
+            "Categorical column",
+            options=usable_cats,
+            key="eda_cat_col",
+        )
+        top_n = st.slider(
+            "Show top N categories (rest grouped as Other)",
+            min_value=5,
+            max_value=30,
+            value=15,
+            key="eda_cat_topn",
+        )
+
+        series = df[cat_choice].fillna("(Missing)").astype(str)
+        vc = series.value_counts()
+        if len(vc) > top_n:
+            top = vc.head(top_n)
+            other_count = int(vc.iloc[top_n:].sum())
+            plot_data = top.copy()
+            plot_data["Other"] = other_count
+        else:
+            plot_data = vc
+
+        counts = plot_data.reset_index()
+        counts.columns = [cat_choice, "count"]
+        counts["share"] = (counts["count"] / counts["count"].sum() * 100).round(1)
+
+        fig = px.bar(
+            counts,
+            x=cat_choice,
+            y="count",
+            text=counts["share"].map(lambda x: f"{x:.0f}%"),
+            title=f"Frequency of {cat_choice}",
+            template="plotly_white",
+            color="count",
+            color_continuous_scale=["#BFDBFE", "#1D4ED8"],
         )
         fig.update_traces(textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No low-cardinality categorical columns to chart.")
-
-    data = _correlation_frame(df, numeric_cols, categorical_cols)
-    if data.shape[1] > 1:
-        st.subheader("Correlation Analysis")
-        corr = data.corr()
-        lower = ~np.triu(np.ones(corr.shape, dtype=bool))      # each pair once, no diagonal
-        shown = corr.where(lower).iloc[1:, :-1]
-        fig = px.imshow(
-            shown, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-            aspect="auto", title="Correlation heatmap (each pair shown once)",
+        fig.update_layout(
+            height=380,
+            showlegend=False,
+            coloraxis_showscale=False,
+            xaxis_tickangle=-30,
+            margin=dict(l=10, r=10, t=50, b=80),
         )
-        fig.update_layout(height=max(380, 75 * len(shown) + 170), margin=dict(l=20, r=20, t=60, b=20))
-        fig.update_xaxes(tickangle=-35, automargin=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("Full value counts"):
+            full = vc.reset_index()
+            full.columns = [cat_choice, "count"]
+            full["share %"] = (full["count"] / full["count"].sum() * 100).round(2)
+            st.dataframe(full, use_container_width=True, hide_index=True)
+
+    # ------------------------------------------------------------------
+    # 5. Correlation analysis
+    # ------------------------------------------------------------------
+    st.markdown("#### Correlation analysis")
+    corr_data = _correlation_frame(df, numeric_cols, all_cat_cols)
+    if corr_data.shape[1] < 2:
+        st.info(
+            "Need at least two numeric (or binary categorical) columns "
+            "with variation to compute correlations."
+        )
+    else:
+        # Cap number of features for readable heatmap
+        if corr_data.shape[1] > 20:
+            # Prefer columns with higher variance
+            variances = corr_data.var().sort_values(ascending=False)
+            keep = variances.head(20).index.tolist()
+            corr_data = corr_data[keep]
+            st.caption(
+                f"Showing the 20 highest-variance features (of {len(variances)}) "
+                "to keep the heatmap readable."
+            )
+
+        corr = corr_data.corr(numeric_only=True)
+        # Lower triangle only (cleaner view)
+        mask = np.triu(np.ones(corr.shape, dtype=bool))
+        shown = corr.mask(mask)
+
+        fig = px.imshow(
+            shown,
+            text_auto=".2f",
+            color_continuous_scale="RdBu_r",
+            zmin=-1,
+            zmax=1,
+            aspect="auto",
+            title="Pearson correlation (lower triangle)",
+            template="plotly_white",
+        )
+        fig.update_layout(
+            height=max(360, 55 * len(shown) + 120),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        fig.update_xaxes(tickangle=-40, automargin=True)
         fig.update_yaxes(automargin=True)
         st.plotly_chart(fig, use_container_width=True)
 
-        pairs = corr.where(lower).stack()
-        pairs = pairs.reindex(pairs.abs().sort_values(ascending=False).index).head(3)
-        if pairs.abs().max() < 0.1:
-            st.info("All relationships are negligible (|r| below 0.10): in this data the columns "
-                    "move independently of each other.")
-        else:
-            st.markdown("**Strongest relationships**")
-            for (a_col, b_col), r in pairs.items():
-                direction = "move together" if r > 0 else "move in opposite directions"
-                st.markdown(f"- **{a_col}** and **{b_col}**: r = {r:+.2f} ({_strength(r)}), they {direction}.")
-        st.caption("Correlation measures straight-line relationships only. A value near 0 does not "
-                   "prove two columns are unrelated, and correlation does not show cause and effect.")
+        # Strongest pairs
+        pairs = (
+            corr.where(~mask)
+            .stack()
+            .reset_index()
+        )
+        pairs.columns = ["Feature A", "Feature B", "r"]
+        pairs["|r|"] = pairs["r"].abs()
+        pairs = pairs.sort_values("|r|", ascending=False).head(8)
 
-    if len(numeric_cols) >= 2:
-        st.subheader("Feature Relationship Explorer")
-        c1, c2 = st.columns(2)
-        x = c1.selectbox("X axis", numeric_cols, index=0, key="rel_x")
-        y = c2.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1), key="rel_y")
-        color_by = None
-        if categorical_cols:
-            color_by = st.selectbox("Color by (optional)", ["None"] + categorical_cols, key="rel_color")
-            color_by = None if color_by == "None" else color_by
-        plot_df = df.sample(5000, random_state=0) if len(df) > 5000 else df
-        x_disc, y_disc = df[x].nunique() <= 12, df[y].nunique() <= 12
-        if x == y:
-            st.info("Choose two different columns.")
+        if pairs.empty or pairs["|r|"].max() < 0.1:
+            st.info(
+                "All pairwise correlations are negligible (|r| < 0.10). "
+                "Columns appear largely independent in a linear sense."
+            )
         else:
-            if y_disc and not x_disc:       # e.g. complaints (0-6) vs usage: compare distributions
-                fig = px.box(plot_df, x=y, y=x, color=color_by, template="plotly_white",
-                             title=f"{x} for each value of {y}")
-            elif x_disc and not y_disc:
-                fig = px.box(plot_df, x=x, y=y, color=color_by, template="plotly_white",
-                             title=f"{y} for each value of {x}")
-            elif x_disc and y_disc:
-                fig = px.density_heatmap(plot_df, x=x, y=y, text_auto=True,
-                                         color_continuous_scale="Blues", title=f"{x} vs {y} (record counts)")
-            else:
-                fig = px.scatter(plot_df, x=x, y=y, color=color_by, opacity=0.55,
-                                 template="plotly_white", title=f"{x} vs {y}")
-            st.plotly_chart(fig, use_container_width=True)
-            if x_disc or y_disc:
-                st.caption("One of these columns has only a few distinct values, so a box plot is used "
-                           "instead of a scatter plot, which would pile points into straight lines.")
-        if len(df) > 5000:
-            st.caption("Showing a random sample of 5,000 rows to keep the chart responsive.")
+            st.markdown("**Strongest linear relationships**")
+            for _, row in pairs.iterrows():
+                direction = "positive" if row["r"] > 0 else "negative"
+                st.markdown(
+                    f"- **{row['Feature A']}** ↔ **{row['Feature B']}**: "
+                    f"r = {row['r']:+.3f} ({_strength(row['r'])}, {direction})"
+                )
+        st.caption(
+            "Correlation only captures linear association. Near-zero does not "
+            "prove independence, and correlation never implies causation."
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Interactive bivariate explorer
+    # ------------------------------------------------------------------
+    st.markdown("#### Feature relationship explorer")
+    st.caption(
+        "Pick any two columns. The chart type adapts automatically: "
+        "scatter for continuous–continuous, box/violin for categorical–numeric, "
+        "and a heatmap / stacked bars for categorical–categorical."
+    )
+
+    all_plottable = numeric_cols + all_cat_cols
+    if len(all_plottable) < 2:
+        st.info("Need at least two non-identifier columns to explore relationships.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    x_col = c1.selectbox("X axis", all_plottable, index=0, key="eda_rel_x")
+    y_options = [c for c in all_plottable if c != x_col] or all_plottable
+    y_col = c2.selectbox(
+        "Y axis",
+        y_options,
+        index=0,
+        key="eda_rel_y",
+    )
+    color_options = ["(None)"] + [c for c in low_card_cats if c not in (x_col, y_col)]
+    color_col = c3.selectbox("Color by (optional)", color_options, key="eda_rel_color")
+    color_by = None if color_col == "(None)" else color_col
+
+    plot_df = _safe_sample(df)
+    x_is_num = x_col in numeric_cols
+    y_is_num = y_col in numeric_cols
+    x_low = x_col in low_card_cats or (x_is_num and df[x_col].nunique() <= 12)
+    y_low = y_col in low_card_cats or (y_is_num and df[y_col].nunique() <= 12)
+
+    try:
+        if x_is_num and y_is_num and not (x_low or y_low):
+            # Continuous scatter
+            fig = px.scatter(
+                plot_df,
+                x=x_col,
+                y=y_col,
+                color=color_by,
+                opacity=0.55,
+                trendline="ols" if color_by is None else None,
+                template="plotly_white",
+                title=f"{y_col} vs {x_col}",
+            )
+            if color_by is None:
+                # trendline adds a second trace; keep layout clean
+                pass
+        elif (x_is_num and y_low) or (y_is_num and x_low):
+            # One continuous, one discrete → box plot
+            cat_axis, num_axis = (x_col, y_col) if x_low else (y_col, x_col)
+            fig = px.box(
+                plot_df,
+                x=cat_axis,
+                y=num_axis,
+                color=color_by,
+                points="outliers",
+                template="plotly_white",
+                title=f"{num_axis} by {cat_axis}",
+            )
+        elif x_low and y_low:
+            # Both discrete → density heatmap of counts
+            fig = px.density_heatmap(
+                plot_df,
+                x=x_col,
+                y=y_col,
+                text_auto=True,
+                color_continuous_scale="Blues",
+                template="plotly_white",
+                title=f"Counts: {x_col} × {y_col}",
+            )
+        else:
+            # Fallback scatter
+            fig = px.scatter(
+                plot_df,
+                x=x_col,
+                y=y_col,
+                color=color_by,
+                opacity=0.5,
+                template="plotly_white",
+                title=f"{y_col} vs {x_col}",
+            )
+
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=50, b=40))
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Could not build the relationship plot: {e}")
+
+    if len(df) > 5000:
+        st.caption("Relationship chart uses a random sample of 5 000 rows.")
+
+    # Optional: simple datetime trend if a datetime column exists
+    if datetime_cols and numeric_cols:
+        with st.expander("Time trend (if datetime columns present)"):
+            dcol = st.selectbox("Datetime column", datetime_cols, key="eda_time_col")
+            ncol = st.selectbox("Numeric column to aggregate", numeric_cols, key="eda_time_num")
+            try:
+                tmp = df[[dcol, ncol]].copy()
+                tmp[dcol] = pd.to_datetime(tmp[dcol], errors="coerce")
+                tmp = tmp.dropna(subset=[dcol]).sort_values(dcol)
+                if len(tmp) >= 5:
+                    # Auto-resample based on span
+                    span_days = (tmp[dcol].max() - tmp[dcol].min()).days
+                    rule = "D" if span_days < 90 else ("W" if span_days < 730 else "M")
+                    ts = tmp.set_index(dcol)[ncol].resample(rule).mean().dropna()
+                    fig_ts = px.line(
+                        ts.reset_index(),
+                        x=dcol,
+                        y=ncol,
+                        markers=True,
+                        template="plotly_white",
+                        title=f"Mean {ncol} over time ({rule} resample)",
+                    )
+                    fig_ts.update_layout(height=360)
+                    st.plotly_chart(fig_ts, use_container_width=True)
+                else:
+                    st.info("Not enough valid datetime values for a trend.")
+            except Exception as e:
+                st.warning(f"Time series plot failed: {e}")
 
 
 # ----------------------------------------------------------------------
