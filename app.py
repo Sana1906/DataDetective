@@ -42,6 +42,7 @@ def _markdown(body, *args, **kwargs):
 
 st.markdown = _markdown
 import extensions as ext
+import privacy
 from sklearn.ensemble import (
     IsolationForest,
     RandomForestClassifier,
@@ -507,39 +508,9 @@ def data_quality_report(df: pd.DataFrame) -> dict:
 # ----------------------------------------------------------------------
 # ---- Privacy / Security Scan ----
 # ----------------------------------------------------------------------
-SENSITIVE_KEYWORDS = {
-    "email": "🔴 Sensitive (PII)",
-    "phone": "🔴 Sensitive (PII)",
-    "mobile": "🔴 Sensitive (PII)",
-    "ssn": "🔴 Sensitive (ID)",
-    "aadhar": "🔴 Sensitive (ID)",
-    "passport": "🔴 Sensitive (ID)",
-    "credit": "🔴 Sensitive (Financial)",
-    "card": "🔴 Sensitive (Financial)",
-    "salary": "🟡 Potentially sensitive (Financial)",
-    "income": "🟡 Potentially sensitive (Financial)",
-    "address": "🔴 Sensitive (PII)",
-    "name": "🟡 Potentially sensitive (PII)",
-    "dob": "🟡 Potentially sensitive (PII)",
-    "birth": "🟡 Potentially sensitive (PII)",
-    "age": "🟢 Low risk",
-    "gender": "🟢 Low risk",
-    "password": "🔴 Sensitive (Credential)",
-    "ip_address": "🔴 Sensitive (Technical)",
-}
-
-
 def privacy_scan(df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for col in df.columns:
-        lc = col.lower()
-        detection = "🟢 Normal"
-        for kw, label in SENSITIVE_KEYWORDS.items():
-            if kw in lc:
-                detection = label
-                break
-        rows.append({"Column": col, "Detection": detection})
-    return pd.DataFrame(rows)
+    """Layered privacy scan (names + values + statistics). See privacy.py."""
+    return privacy.scan_compat(df)
 
 
 # ----------------------------------------------------------------------
@@ -977,7 +948,7 @@ def build_report(df: pd.DataFrame, info: dict, quality: dict, discoveries: list)
 
     sensitive = privacy_results[
         ~privacy_results["Detection"].str.contains(
-            "Normal", case=False, na=False
+            "Normal|Low risk", case=False, na=False
         )
     ]
 
@@ -1102,7 +1073,7 @@ with st.sidebar:
         """
         <div style="margin-top:28px;color:#7890ad !important;
                     font-size:10px;line-height:1.6;">
-            Runs locally in your Streamlit session.<br>
+            Runs inside your Streamlit session.<br>
             Review generated findings before making decisions.
         </div>
         """,
@@ -1123,7 +1094,7 @@ st.markdown(
                 Turn raw datasets into trusted, explainable insights.
             </div>
         </div>
-        <div class="secure-pill">● LOCAL & SECURE</div>
+        <div class="secure-pill">● SESSION-BASED</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -1442,46 +1413,7 @@ else:
 
     # ---- Privacy ----
     with tabs[2]:
-
-        st.markdown(
-            '<div class="section-title">Privacy Scan</div>',
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            '<div class="section-caption">Flags columns whose names resemble common sensitive-data fields.</div>',
-            unsafe_allow_html=True
-        )
-
-        scan = privacy_scan(df)
-        st.dataframe(scan, use_container_width=True)
-
-        sensitive_cols = scan[
-            scan["Detection"].str.contains("🔴|🟡")
-        ]["Column"].tolist()
-
-        if sensitive_cols:
-            st.warning(
-                f"{len(sensitive_cols)} column(s) may contain sensitive information."
-            )
-
-            mask_cols = st.multiselect(
-                "Mask selected columns in the preview",
-                sensitive_cols
-            )
-
-            if mask_cols:
-                masked = df.copy()
-
-                for c in mask_cols:
-                    masked[c] = "•••••"
-
-                st.dataframe(
-                    masked.head(20),
-                    use_container_width=True
-                )
-        else:
-            st.success("No obviously sensitive columns detected by the current name-based scan.")
-        ext.render_security(df)
+        privacy.render_privacy(df)
 
     # ---- EDA ----
     with tabs[3]:
@@ -1876,7 +1808,7 @@ else:
                     privacy_results = privacy_scan(df)
                     sensitive = privacy_results[
                         ~privacy_results["Detection"].str.contains(
-                            "Normal", case=False, na=False
+                            "Normal|Low risk", case=False, na=False
                         )
                     ]
                     st.metric(
@@ -1894,7 +1826,7 @@ else:
                             hide_index=True,
                         )
                     else:
-                        st.success("No columns were flagged by the name-based scan.")
+                        st.success("No columns were flagged by the privacy scan.")
                 except Exception:
                     st.info(
                         "Privacy scan results are unavailable for display."
