@@ -395,8 +395,19 @@ def log(section: str, text: str):
 # ----------------------------------------------------------------------
 # ---- STAGE 1: Dataset Understanding ----
 # ----------------------------------------------------------------------
+def _is_identifier_like(s: pd.Series) -> bool:
+    """True when almost every value is unique (IDs, names, emails). Charts of these are meaningless."""
+    n = int(s.notna().sum())
+    if n < 20 or pd.api.types.is_float_dtype(s) or pd.api.types.is_bool_dtype(s):
+        return False
+    return s.nunique(dropna=True) / n >= 0.95
+
+
 def understand_dataset(df: pd.DataFrame) -> dict:
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    # identifier-like columns (customer_id, name, email...) are not analysed as numbers or categories
+    id_cols = [c for c in df.columns if _is_identifier_like(df[c])]
+    numeric_cols = [c for c in numeric_cols if c not in id_cols]
     categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
     datetime_cols = df.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns.tolist()
 
@@ -415,6 +426,7 @@ def understand_dataset(df: pd.DataFrame) -> dict:
 
     return {
         "rows": df.shape[0],
+        "id_cols": id_cols,
         "cols": df.shape[1],
         "numeric_cols": numeric_cols,
         "categorical_cols": categorical_cols,
@@ -517,10 +529,24 @@ def privacy_scan(df: pd.DataFrame) -> pd.DataFrame:
 # ---- STAGE 3: Automated, context-aware EDA ----
 # ----------------------------------------------------------------------
 def render_eda(df: pd.DataFrame, info: dict):
-    numeric_cols = info["numeric_cols"]
-    categorical_cols = info["categorical_cols"]
+    id_cols = set(info.get("id_cols", []))
+    numeric_cols = [c for c in info["numeric_cols"] if c not in id_cols]
+    # only low-cardinality columns make a readable category chart
+    categorical_cols = [
+        c for c in info["categorical_cols"]
+        if c not in id_cols and 1 < df[c].nunique() <= 20
+    ]
+    hidden = [c for c in df.columns if c in id_cols]
+    hidden += [c for c in info["categorical_cols"]
+               if c not in id_cols and df[c].nunique() > 20]
+    if hidden:
+        st.info(
+            "Hidden from the charts because nearly every value is different "
+            f"(identifiers or free text): {', '.join(hidden)}. "
+            "A bar or histogram of such a column shows nothing useful."
+        )
 
-    st.subheader("📊 Distributions")
+    st.subheader("Distributions")
     if numeric_cols:
         col_choice = st.multiselect(
             "Numeric columns to visualize",
@@ -529,30 +555,42 @@ def render_eda(df: pd.DataFrame, info: dict):
         )
         cols = st.columns(2)
         for i, c in enumerate(col_choice):
-            fig = px.histogram(df, x=c, nbins=30, title=f"Distribution of {c}", marginal="box")
+            fig = px.histogram(
+                df, x=c, nbins=30, title=f"Distribution of {c}",
+                marginal="box", template="plotly_white",
+            )
             cols[i % 2].plotly_chart(fig, use_container_width=True)
     else:
         st.info("No numeric columns detected for distribution plots.")
 
     if categorical_cols:
-        st.subheader("🧩 Category Breakdown")
+        st.subheader("Category Breakdown")
         cat_choice = st.selectbox("Categorical column", categorical_cols)
-        vc = df[cat_choice].value_counts().head(15).reset_index()
-        vc.columns = [cat_choice, "count"]
-        fig = px.bar(vc, x=cat_choice, y="count", title=f"Top categories in {cat_choice}")
+        counts = df[cat_choice].fillna("Missing").astype(str).value_counts().reset_index()
+        counts.columns = [cat_choice, "count"]
+        counts["share"] = (counts["count"] / counts["count"].sum()).map("{:.0%}".format)
+        fig = px.bar(
+            counts, x=cat_choice, y="count", text="share",
+            title=f"Distribution of {cat_choice} (count and share of rows)",
+            template="plotly_white",
+        )
+        fig.update_traces(textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No low-cardinality categorical columns to chart.")
 
-    if len(numeric_cols) > 1:
-        st.subheader("🔗 Correlation Analysis")
-        corr = df[numeric_cols].corr(numeric_only=True)
+    corr_cols = [c for c in numeric_cols if df[c].nunique() > 1]
+    if len(corr_cols) > 1:
+        st.subheader("Correlation Analysis")
+        corr = df[corr_cols].corr(numeric_only=True)
         fig = px.imshow(
             corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
-            title="Correlation heatmap",
+            title="Correlation heatmap (identifier columns excluded)",
         )
         st.plotly_chart(fig, use_container_width=True)
 
     if len(numeric_cols) >= 2:
-        st.subheader("🔍 Feature Relationship Explorer")
+        st.subheader("Feature Relationship Explorer")
         c1, c2 = st.columns(2)
         x = c1.selectbox("X axis", numeric_cols, index=0, key="rel_x")
         y = c2.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1), key="rel_y")
@@ -560,8 +598,11 @@ def render_eda(df: pd.DataFrame, info: dict):
         if categorical_cols:
             color_by = st.selectbox("Color by (optional)", ["None"] + categorical_cols, key="rel_color")
             color_by = None if color_by == "None" else color_by
-        fig = px.scatter(df, x=x, y=y, color=color_by, title=f"{x} vs {y}")
+        plot_df = df.sample(5000, random_state=0) if len(df) > 5000 else df
+        fig = px.scatter(plot_df, x=x, y=y, color=color_by, title=f"{x} vs {y}", template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
+        if len(df) > 5000:
+            st.caption("Showing a random sample of 5,000 rows to keep the chart responsive.")
 
 
 # ----------------------------------------------------------------------
